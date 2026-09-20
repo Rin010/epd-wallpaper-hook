@@ -24,7 +24,8 @@ import java.util.Locale;
 
 final class ImageImporter {
     static final String MODE_FILL = "fill";
-    static final String MODE_FIT = "fit";
+    static final String MODE_FIT_WHITE = "fit_white";
+    static final String MODE_FIT_BLACK = "fit_black";
 
     private ImageImporter() {
     }
@@ -85,7 +86,10 @@ final class ImageImporter {
         if (oriented != source) {
             source.recycle();
         }
-        Bitmap output = render(oriented, targetWidth, targetHeight, MODE_FILL.equals(mode));
+        boolean fill = MODE_FILL.equals(mode);
+        int backgroundColor = MODE_FIT_BLACK.equals(mode) ? Color.BLACK : Color.WHITE;
+        Bitmap output = render(
+                oriented, targetWidth, targetHeight, fill, backgroundColor);
         if (output != oriented) {
             oriented.recycle();
         }
@@ -192,11 +196,11 @@ final class ImageImporter {
                 source, 0, 0, source.getWidth(), source.getHeight(), matrix, true);
     }
 
-    private static Bitmap render(
-            Bitmap source, int targetWidth, int targetHeight, boolean fill) {
+    private static Bitmap render(Bitmap source, int targetWidth, int targetHeight,
+            boolean fill, int backgroundColor) {
         Bitmap output = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.RGB_565);
         Canvas canvas = new Canvas(output);
-        canvas.drawColor(Color.WHITE);
+        canvas.drawColor(backgroundColor);
         float scaleX = (float) targetWidth / source.getWidth();
         float scaleY = (float) targetHeight / source.getHeight();
         float scale = fill ? Math.max(scaleX, scaleY) : Math.min(scaleX, scaleY);
@@ -272,7 +276,14 @@ final class ImageImporter {
         }
 
         String description() {
-            String treatment = MODE_FILL.equals(mode) ? "铺满裁剪" : "完整留白";
+            String treatment;
+            if (MODE_FILL.equals(mode)) {
+                treatment = "铺满裁剪";
+            } else if (MODE_FIT_BLACK.equals(mode)) {
+                treatment = "完整显示 · 黑色填充";
+            } else {
+                treatment = "完整显示 · 白色填充";
+            }
             return String.format(Locale.CHINA, "%d×%d → %d×%d · %s",
                     sourceWidth, sourceHeight, targetWidth, targetHeight, treatment);
         }

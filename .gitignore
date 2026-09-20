@@ -17,3 +17,8 @@ local.properties
 /magisk-ui*
 /su-ui*
 /final-ui*
+/v13-*
+/date-*
+/restore-*
+/off-*
+/import-dialog*

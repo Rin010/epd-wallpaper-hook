@@ -110,8 +110,10 @@ final class SystemWallpaperStore {
             properties.setProperty("system.lock." + resource + ".enabled", Boolean.toString(
                     WallpaperConfig.isSystemItemEnabled(
                             preferences, WallpaperConfig.LOCK, resource)));
+            String dateMode = WallpaperConfig.getSystemDateMode(preferences, resource);
+            properties.setProperty("system.lock." + resource + ".date.mode", dateMode);
             properties.setProperty("system.lock." + resource + ".date", Boolean.toString(
-                    WallpaperConfig.isSystemDateEnabled(preferences, resource)));
+                    !WallpaperConfig.DATE_OFF.equals(dateMode)));
         }
         properties.setProperty("system.shutdown.default.enabled", Boolean.toString(
                 WallpaperConfig.isSystemItemEnabled(preferences,
@@ -128,8 +130,10 @@ final class SystemWallpaperStore {
             properties.setProperty(prefix + "file", image.getName());
             properties.setProperty(prefix + "enabled", Boolean.toString(
                     WallpaperConfig.isCustomItemEnabled(preferences, image)));
+            String dateMode = WallpaperConfig.getCustomDateMode(preferences, image);
+            properties.setProperty(prefix + "date.mode", dateMode);
             properties.setProperty(prefix + "date", Boolean.toString(
-                    WallpaperConfig.isCustomDateEnabled(preferences, image)));
+                    !WallpaperConfig.DATE_OFF.equals(dateMode)));
             properties.setProperty(prefix + "lock", Boolean.toString(
                     WallpaperConfig.isCustomRoleEnabled(
                             preferences, image, WallpaperConfig.LOCK)));

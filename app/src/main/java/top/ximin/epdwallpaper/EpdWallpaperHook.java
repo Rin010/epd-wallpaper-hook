@@ -4,11 +4,13 @@ import android.content.Context;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Color;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ImageView;
+import android.widget.TextView;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -96,11 +98,16 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
                                     && !applyCustomImage(background, selection)) {
                                 return;
                             }
-                            if (!selection.showDate) {
+                            int styledTextViews = 0;
+                            if (WallpaperConfig.DATE_OFF.equals(selection.dateMode)) {
                                 hideNonImageLeaves(root, background);
+                            } else {
+                                styledTextViews = styleDateText(
+                                        root, background, selection.dateMode);
                             }
                             log("lock selected " + selection.displayName
-                                    + ", showDate=" + selection.showDate);
+                                    + ", dateMode=" + selection.dateMode
+                                    + ", styledTextViews=" + styledTextViews);
                         } catch (Throwable error) {
                             log("lock replacement failed; using stock image", error);
                         }
@@ -152,13 +159,15 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
         if (WallpaperConfig.LOCK.equals(category)) {
             for (String resource : WallpaperConfig.LOCK_SYSTEM_IMAGES) {
                 if (readBoolean(config, "system.lock." + resource + ".enabled", true)) {
-                    candidates.add(Selection.system(resource, readBoolean(config,
-                            "system.lock." + resource + ".date", true)));
+                    candidates.add(Selection.system(resource, readDateMode(config,
+                            "system.lock." + resource + ".date.mode",
+                            "system.lock." + resource + ".date")));
                 }
             }
         } else if (readBoolean(config,
                 "system." + category + ".default.enabled", true)) {
-            candidates.add(Selection.system(WallpaperConfig.SYSTEM_DEFAULT, false));
+            candidates.add(Selection.system(
+                    WallpaperConfig.SYSTEM_DEFAULT, WallpaperConfig.DATE_OFF));
         }
         int count = Math.max(0, Math.min(readInt(config, "custom.count", 0), 1000));
         for (int index = 0; index < count; index++) {
@@ -171,9 +180,10 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
             }
             File image = new File(SystemWallpaperStore.IMAGE_ROOT, fileName);
             if (isSafeSystemImage(image)) {
-                candidates.add(Selection.custom(image,
-                        WallpaperConfig.LOCK.equals(category)
-                                && readBoolean(config, prefix + "date", true)));
+                String dateMode = WallpaperConfig.LOCK.equals(category)
+                        ? readDateMode(config, prefix + "date.mode", prefix + "date")
+                        : WallpaperConfig.DATE_OFF;
+                candidates.add(Selection.custom(image, dateMode));
             }
         }
         if (candidates.isEmpty()) {
@@ -232,6 +242,18 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
         }
     }
 
+    private static String readDateMode(
+            Properties properties, String modeKey, String legacyBooleanKey) {
+        String mode = properties.getProperty(modeKey);
+        if (WallpaperConfig.DATE_BLACK.equals(mode)
+                || WallpaperConfig.DATE_WHITE.equals(mode)
+                || WallpaperConfig.DATE_OFF.equals(mode)) {
+            return mode;
+        }
+        return readBoolean(properties, legacyBooleanKey, true)
+                ? WallpaperConfig.DATE_BLACK : WallpaperConfig.DATE_OFF;
+    }
+
     private static boolean applyCustomImage(ImageView imageView, Selection selection) {
         Bitmap bitmap = decodeForDisplay(selection.image, imageView.getResources());
         if (bitmap == null) {
@@ -272,6 +294,27 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
         } else {
             view.setVisibility(View.GONE);
         }
+    }
+
+    private static int styleDateText(View view, ImageView background, String mode) {
+        if (view == background) {
+            return 0;
+        }
+        int styled = 0;
+        if (view instanceof TextView) {
+            TextView text = (TextView) view;
+            boolean white = WallpaperConfig.DATE_WHITE.equals(mode);
+            text.setTextColor(white ? Color.WHITE : Color.BLACK);
+            text.setShadowLayer(2f, 0f, 0f, white ? Color.BLACK : Color.WHITE);
+            styled++;
+        }
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int index = 0; index < group.getChildCount(); index++) {
+                styled += styleDateText(group.getChildAt(index), background, mode);
+            }
+        }
+        return styled;
     }
 
     private static Bitmap decodeForDisplay(File image, Resources resources) {
@@ -322,23 +365,23 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
         final File image;
         final String resourceName;
         final String displayName;
-        final boolean showDate;
+        final String dateMode;
 
         private Selection(String mode, File image, String resourceName,
-                String displayName, boolean showDate) {
+                String displayName, String dateMode) {
             this.mode = mode;
             this.image = image;
             this.resourceName = resourceName;
             this.displayName = displayName;
-            this.showDate = showDate;
+            this.dateMode = dateMode;
         }
 
-        static Selection system(String resourceName, boolean showDate) {
-            return new Selection("system", null, resourceName, resourceName, showDate);
+        static Selection system(String resourceName, String dateMode) {
+            return new Selection("system", null, resourceName, resourceName, dateMode);
         }
 
-        static Selection custom(File image, boolean showDate) {
-            return new Selection("custom", image, null, image.getName(), showDate);
+        static Selection custom(File image, String dateMode) {
+            return new Selection("custom", image, null, image.getName(), dateMode);
         }
     }
 }

@@ -117,12 +117,18 @@ public final class MainActivity extends Activity {
                 .setTitle("图片如何适配屏幕？")
                 .setItems(new String[] {
                         "铺满屏幕（推荐，居中裁剪边缘）",
-                        "完整显示（不裁剪，空白处留白）"
+                        "完整显示（不裁剪，空白处填充白色）",
+                        "完整显示（不裁剪，空白处填充黑色）"
                 }, new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface dialog, int which) {
-                        pendingImportMode = which == 0
-                                ? ImageImporter.MODE_FILL : ImageImporter.MODE_FIT;
+                        if (which == 0) {
+                            pendingImportMode = ImageImporter.MODE_FILL;
+                        } else if (which == 1) {
+                            pendingImportMode = ImageImporter.MODE_FIT_WHITE;
+                        } else {
+                            pendingImportMode = ImageImporter.MODE_FIT_BLACK;
+                        }
                         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
                         intent.addCategory(Intent.CATEGORY_OPENABLE);
                         intent.setType("image/*");
@@ -330,7 +336,8 @@ public final class MainActivity extends Activity {
         int managedWidth = Math.min(display.widthPixels, display.heightPixels);
         int managedHeight = Math.max(display.widthPixels, display.heightPixels);
         addParagraph("点“导入图片”后可多选。应用会自动修正照片方向，并处理为本机屏幕 "
-                + managedWidth + "×" + managedHeight + "；可选择铺满裁剪或完整留白。", 17);
+                + managedWidth + "×" + managedHeight
+                + "；可选择铺满裁剪，或完整显示并用黑色/白色填充。", 17);
         Button importButton = addButton(importing ? "正在导入…" : "导入图片");
         importButton.setEnabled(!importing);
         importButton.setOnClickListener(new View.OnClickListener() {
@@ -405,22 +412,28 @@ public final class MainActivity extends Activity {
 
         if (supportsDate) {
             final TextView dateOverlay = (TextView) preview.getChildAt(1);
-            CheckBox showDate = new CheckBox(this);
-            showDate.setText("锁屏时显示日期");
-            showDate.setTextSize(17);
-            showDate.setChecked(WallpaperConfig.isSystemDateEnabled(
-                    preferences, resourceName));
-            dateOverlay.setVisibility(showDate.isChecked() ? View.VISIBLE : View.GONE);
-            showDate.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            final Button dateMode = new Button(this);
+            dateMode.setTextSize(16);
+            updateDateControl(dateMode, dateOverlay,
+                    WallpaperConfig.getSystemDateMode(preferences, resourceName));
+            dateMode.setOnClickListener(new View.OnClickListener() {
                 @Override
-                public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
-                    WallpaperConfig.setSystemDateEnabled(
-                            preferences, resourceName, isChecked);
-                    SystemWallpaperStore.syncConfigurationAsync(MainActivity.this, preferences);
-                    dateOverlay.setVisibility(isChecked ? View.VISIBLE : View.GONE);
+                public void onClick(View view) {
+                    showDateModeDialog(WallpaperConfig.getSystemDateMode(
+                                    preferences, resourceName),
+                            new DateModeConsumer() {
+                                @Override
+                                public void accept(String mode) {
+                                    WallpaperConfig.setSystemDateMode(
+                                            preferences, resourceName, mode);
+                                    SystemWallpaperStore.syncConfigurationAsync(
+                                            MainActivity.this, preferences);
+                                    updateDateControl(dateMode, dateOverlay, mode);
+                                }
+                            });
                 }
             });
-            controls.addView(showDate, matchWrap());
+            controls.addView(dateMode, wrapWrap());
         }
 
         TextView protectedLabel = text("系统图片不可删除", 15, false);
@@ -464,20 +477,26 @@ public final class MainActivity extends Activity {
         controls.addView(roles, matchWrap());
 
         final TextView dateOverlay = (TextView) preview.getChildAt(1);
-        CheckBox showDate = new CheckBox(this);
-        showDate.setText("用作锁屏时显示日期");
-        showDate.setTextSize(17);
-        showDate.setChecked(WallpaperConfig.isCustomDateEnabled(preferences, file));
-        dateOverlay.setVisibility(showDate.isChecked() ? View.VISIBLE : View.GONE);
-        showDate.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+        final Button dateMode = new Button(this);
+        dateMode.setTextSize(16);
+        updateDateControl(dateMode, dateOverlay,
+                WallpaperConfig.getCustomDateMode(preferences, file));
+        dateMode.setOnClickListener(new View.OnClickListener() {
             @Override
-            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
-                WallpaperConfig.setCustomDateEnabled(preferences, file, isChecked);
-                SystemWallpaperStore.syncConfigurationAsync(MainActivity.this, preferences);
-                dateOverlay.setVisibility(isChecked ? View.VISIBLE : View.GONE);
+            public void onClick(View view) {
+                showDateModeDialog(WallpaperConfig.getCustomDateMode(preferences, file),
+                        new DateModeConsumer() {
+                            @Override
+                            public void accept(String mode) {
+                                WallpaperConfig.setCustomDateMode(preferences, file, mode);
+                                SystemWallpaperStore.syncConfigurationAsync(
+                                        MainActivity.this, preferences);
+                                updateDateControl(dateMode, dateOverlay, mode);
+                            }
+                        });
             }
         });
-        controls.addView(showDate, matchWrap());
+        controls.addView(dateMode, wrapWrap());
 
         Button delete = new Button(this);
         delete.setText("删除这张图片");
@@ -510,6 +529,59 @@ public final class MainActivity extends Activity {
             }
         });
         return checkBox;
+    }
+
+    private void showDateModeDialog(String currentMode, final DateModeConsumer consumer) {
+        new AlertDialog.Builder(this)
+                .setTitle("锁屏日期（当前：" + dateModeLabel(currentMode) + "）")
+                .setItems(new String[] {"黑色", "白色", "关闭"},
+                        new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        if (which == 0) {
+                            consumer.accept(WallpaperConfig.DATE_BLACK);
+                        } else if (which == 1) {
+                            consumer.accept(WallpaperConfig.DATE_WHITE);
+                        } else {
+                            consumer.accept(WallpaperConfig.DATE_OFF);
+                        }
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void updateDateControl(Button button, TextView preview, String mode) {
+        mode = WallpaperConfig.normalizeDateMode(mode);
+        button.setText("锁屏日期：" + dateModeLabel(mode));
+        if (WallpaperConfig.DATE_OFF.equals(mode)) {
+            preview.setVisibility(View.GONE);
+            return;
+        }
+        preview.setVisibility(View.VISIBLE);
+        preview.setBackgroundColor(Color.TRANSPARENT);
+        if (WallpaperConfig.DATE_WHITE.equals(mode)) {
+            preview.setTextColor(Color.WHITE);
+            preview.setShadowLayer(dp(1), 0, 0, Color.BLACK);
+        } else {
+            preview.setTextColor(Color.BLACK);
+            preview.setShadowLayer(dp(1), 0, 0, Color.WHITE);
+        }
+    }
+
+    private String dateModeLabel(String mode) {
+        mode = WallpaperConfig.normalizeDateMode(mode);
+        if (WallpaperConfig.DATE_WHITE.equals(mode)) {
+            return "白色";
+        }
+        if (WallpaperConfig.DATE_OFF.equals(mode)) {
+            return "关闭";
+        }
+        return "黑色";
+    }
+
+    private interface DateModeConsumer {
+        void accept(String mode);
     }
 
     private void confirmDelete(final File file) {
@@ -557,7 +629,8 @@ public final class MainActivity extends Activity {
         TextView date = text(new SimpleDateFormat(
                 "MM月dd日  E", Locale.CHINA).format(new Date()), 16, true);
         date.setTextColor(Color.BLACK);
-        date.setBackgroundColor(0xCCFFFFFF);
+        date.setBackgroundColor(Color.TRANSPARENT);
+        date.setShadowLayer(dp(1), 0, 0, Color.WHITE);
         date.setGravity(Gravity.CENTER);
         FrameLayout.LayoutParams dateParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(40), Gravity.BOTTOM);

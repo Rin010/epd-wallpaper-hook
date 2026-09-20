@@ -19,6 +19,9 @@ final class WallpaperConfig {
     static final String REBOOT = "reboot";
     static final String SYSTEM_DEFAULT = "default";
     static final String[] LOCK_SYSTEM_IMAGES = {"photo5", "photo6", "photo7", "photo8"};
+    static final String DATE_BLACK = "black";
+    static final String DATE_WHITE = "white";
+    static final String DATE_OFF = "off";
 
     private WallpaperConfig() {
     }
@@ -68,23 +71,42 @@ final class WallpaperConfig {
                 "custom_role:" + category + ':' + customId(file), enabled).apply();
     }
 
-    static boolean isSystemDateEnabled(
+    static String getSystemDateMode(
             SharedPreferences preferences, String resourceName) {
-        return preferences.getBoolean("system_date:" + resourceName, true);
+        String modeKey = "system_date_mode:" + resourceName;
+        if (preferences.contains(modeKey)) {
+            return normalizeDateMode(preferences.getString(modeKey, DATE_BLACK));
+        }
+        return preferences.getBoolean("system_date:" + resourceName, true)
+                ? DATE_BLACK : DATE_OFF;
     }
 
-    static void setSystemDateEnabled(
-            SharedPreferences preferences, String resourceName, boolean enabled) {
-        preferences.edit().putBoolean("system_date:" + resourceName, enabled).apply();
+    static void setSystemDateMode(
+            SharedPreferences preferences, String resourceName, String mode) {
+        mode = normalizeDateMode(mode);
+        preferences.edit()
+                .putString("system_date_mode:" + resourceName, mode)
+                .putBoolean("system_date:" + resourceName, !DATE_OFF.equals(mode))
+                .apply();
     }
 
-    static boolean isCustomDateEnabled(SharedPreferences preferences, File file) {
-        return preferences.getBoolean("custom_date:" + customId(file), true);
+    static String getCustomDateMode(SharedPreferences preferences, File file) {
+        String id = customId(file);
+        String modeKey = "custom_date_mode:" + id;
+        if (preferences.contains(modeKey)) {
+            return normalizeDateMode(preferences.getString(modeKey, DATE_BLACK));
+        }
+        return preferences.getBoolean("custom_date:" + id, true) ? DATE_BLACK : DATE_OFF;
     }
 
-    static void setCustomDateEnabled(
-            SharedPreferences preferences, File file, boolean enabled) {
-        preferences.edit().putBoolean("custom_date:" + customId(file), enabled).apply();
+    static void setCustomDateMode(
+            SharedPreferences preferences, File file, String mode) {
+        String id = customId(file);
+        mode = normalizeDateMode(mode);
+        preferences.edit()
+                .putString("custom_date_mode:" + id, mode)
+                .putBoolean("custom_date:" + id, !DATE_OFF.equals(mode))
+                .apply();
     }
 
     static void forgetCustomItem(SharedPreferences preferences, File file) {
@@ -92,6 +114,7 @@ final class WallpaperConfig {
         preferences.edit()
                 .remove("custom_enabled:" + id)
                 .remove("custom_date:" + id)
+                .remove("custom_date_mode:" + id)
                 .remove("custom_info:" + id)
                 .remove("custom_role:" + LOCK + ':' + id)
                 .remove("custom_role:" + SHUTDOWN + ':' + id)
@@ -109,6 +132,7 @@ final class WallpaperConfig {
         preferences.edit()
                 .putBoolean("custom_enabled:" + id, true)
                 .putBoolean("custom_date:" + id, true)
+                .putString("custom_date_mode:" + id, DATE_BLACK)
                 .putBoolean("custom_role:" + LOCK + ':' + id, true)
                 .putBoolean("custom_role:" + SHUTDOWN + ':' + id, false)
                 .putBoolean("custom_role:" + REBOOT + ':' + id, false)
@@ -120,11 +144,17 @@ final class WallpaperConfig {
             ImageImporter.Result result) {
         String oldId = customId(legacy);
         String newId = customId(result.file);
+        String oldModeKey = "custom_date_mode:" + oldId;
+        String dateMode = preferences.contains(oldModeKey)
+                ? normalizeDateMode(preferences.getString(oldModeKey, DATE_BLACK))
+                : (preferences.getBoolean("custom_date:" + oldId, true)
+                        ? DATE_BLACK : DATE_OFF);
         SharedPreferences.Editor editor = preferences.edit()
                 .putBoolean("custom_enabled:" + newId,
                         preferences.getBoolean("custom_enabled:" + oldId, true))
                 .putBoolean("custom_date:" + newId,
-                        preferences.getBoolean("custom_date:" + oldId, true))
+                        !DATE_OFF.equals(dateMode))
+                .putString("custom_date_mode:" + newId, dateMode)
                 .putBoolean("custom_role:" + LOCK + ':' + newId,
                         preferences.getBoolean("custom_role:" + LOCK + ':' + oldId, true))
                 .putBoolean("custom_role:" + SHUTDOWN + ':' + newId,
@@ -133,6 +163,13 @@ final class WallpaperConfig {
                         preferences.getBoolean("custom_role:" + REBOOT + ':' + oldId, false))
                 .putString("custom_info:" + newId, result.description() + " · 已从旧目录迁移");
         editor.commit();
+    }
+
+    static String normalizeDateMode(String mode) {
+        if (DATE_WHITE.equals(mode) || DATE_OFF.equals(mode)) {
+            return mode;
+        }
+        return DATE_BLACK;
     }
 
     static String customId(File file) {
