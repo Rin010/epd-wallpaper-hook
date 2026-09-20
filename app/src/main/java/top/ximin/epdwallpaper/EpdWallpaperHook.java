@@ -1,14 +1,9 @@
 package top.ximin.epdwallpaper;
 
-import android.content.ContentResolver;
 import android.content.Context;
-import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.net.Uri;
-import android.os.Bundle;
-import android.os.ParcelFileDescriptor;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.View;
@@ -16,16 +11,14 @@ import android.view.ViewGroup;
 import android.widget.ImageView;
 
 import java.io.File;
-import java.io.FileFilter;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
-import java.util.Arrays;
-import java.util.Comparator;
+import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.Locale;
 import java.util.Map;
-import java.util.regex.Pattern;
+import java.util.Properties;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -35,83 +28,90 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 public final class EpdWallpaperHook implements IXposedHookLoadPackage {
     private static final String TAG = "EpdWallpaperHook";
-    private static final File ROOT = new File("/storage/emulated/0/Wallpaper");
-    private static final Uri PROVIDER_URI = Uri.parse(
-            "content://top.ximin.epdwallpaper.files");
-    private static final Pattern LOCK_RESOURCE = Pattern.compile(
-            "photo[1-8](?:_charging|_land)?", Pattern.CASE_INSENSITIVE);
+    private static final ThreadLocal<Selection> LOCK_SELECTION = new ThreadLocal<>();
     private static final Map<String, Long> NEXT_INDEX = new HashMap<>();
-    private static volatile boolean hookInstalled;
+    private static volatile boolean hooksInstalled;
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         if (!"android".equals(lpparam.packageName)) {
             return;
         }
-
         synchronized (EpdWallpaperHook.class) {
-            if (hookInstalled) {
+            if (hooksInstalled) {
                 return;
             }
-            hookInstalled = true;
+            hooksInstalled = true;
         }
-
         try {
-            installVendorLockHook(lpparam.classLoader);
-            installVendorShutdownHook(lpparam.classLoader);
-            XposedHelpers.findAndHookMethod(
-                    ImageView.class,
-                    "setImageResource",
-                    int.class,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) {
-                            replaceImageIfConfigured(param);
-                        }
-                    });
-            log("vendor and resource hooks installed in package=" + lpparam.packageName
-                    + " process=" + lpparam.processName);
+            installLockHook(lpparam.classLoader);
+            installShutdownHook(lpparam.classLoader);
+            log("exact vendor hooks installed with system-owned image store in package="
+                    + lpparam.packageName + " process=" + lpparam.processName);
         } catch (Throwable error) {
-            log("unable to install hook", error);
+            log("unable to install exact vendor hooks", error);
         }
     }
 
-    private static void installVendorLockHook(ClassLoader classLoader) throws Throwable {
+    private static void installLockHook(ClassLoader classLoader) throws Throwable {
         Class<?> lunarCalendarView = Class.forName(
                 "android.widget.LunarCalendarView", false, classLoader);
         XposedHelpers.findAndHookConstructor(
-                lunarCalendarView,
-                Context.class,
-                boolean.class,
-                int.class,
-                boolean.class,
+                lunarCalendarView, Context.class, boolean.class, int.class, boolean.class,
                 new XC_MethodHook() {
                     @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        Context context = (Context) param.args[0];
+                        Selection selection = select(WallpaperConfig.LOCK);
+                        LOCK_SELECTION.set(selection);
+                        if (selection == null || !"system".equals(selection.mode)
+                                || selection.resourceName == null
+                                || WallpaperConfig.SYSTEM_DEFAULT.equals(selection.resourceName)) {
+                            return;
+                        }
+                        int resourceId = context.getResources().getIdentifier(
+                                selection.resourceName, "drawable", "android");
+                        if (resourceId != 0) {
+                            param.args[2] = resourceId;
+                        } else {
+                            log("system lock resource not found: " + selection.resourceName);
+                        }
+                    }
+
+                    @Override
                     protected void afterHookedMethod(MethodHookParam param) {
+                        Selection selection = LOCK_SELECTION.get();
+                        LOCK_SELECTION.remove();
+                        if (selection == null) {
+                            return;
+                        }
                         try {
                             View root = (View) param.thisObject;
                             ImageView background = findFirstImageView(root);
                             if (background == null) {
-                                log("lock hook ran but LunarCalendarView contains no ImageView");
+                                log("LunarCalendarView contains no background ImageView");
                                 return;
                             }
-                            boolean landscape = root.getResources().getConfiguration().orientation
-                                    == Configuration.ORIENTATION_LANDSCAPE;
-                            applyConfiguredImage(background, "lock", landscape,
-                                    "LunarCalendarView constructor");
+                            if ("custom".equals(selection.mode)
+                                    && !applyCustomImage(background, selection)) {
+                                return;
+                            }
+                            if (!selection.showDate) {
+                                hideNonImageLeaves(root, background);
+                            }
+                            log("lock selected " + selection.displayName
+                                    + ", showDate=" + selection.showDate);
                         } catch (Throwable error) {
-                            log("vendor lock replacement failed; using stock image", error);
+                            log("lock replacement failed; using stock image", error);
                         }
                     }
                 });
     }
 
-    private static void installVendorShutdownHook(ClassLoader classLoader) throws Throwable {
+    private static void installShutdownHook(ClassLoader classLoader) throws Throwable {
         final Class<?> phoneWindowManager = Class.forName(
                 "com.android.server.policy.PhoneWindowManager", false, classLoader);
-        XposedHelpers.findAndHookMethod(
-                phoneWindowManager,
-                "showShutDown",
+        XposedHelpers.findAndHookMethod(phoneWindowManager, "showShutDown",
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
@@ -120,24 +120,128 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
                             imageField.setAccessible(true);
                             ImageView imageView = (ImageView) imageField.get(null);
                             if (imageView == null) {
-                                log("shutdown hook ran but mShutdownBgImg is null");
+                                log("showShutDown completed without mShutdownBgImg");
                                 return;
                             }
-
                             Field rebootField = phoneWindowManager.getDeclaredField("mReboot");
                             rebootField.setAccessible(true);
-                            String category = rebootField.getBoolean(null) ? "reboot" : "shutdown";
-                            boolean landscape = imageView.getResources().getConfiguration().orientation
-                                    == Configuration.ORIENTATION_LANDSCAPE;
-                            if (applyConfiguredImage(imageView, category, landscape,
-                                    "PhoneWindowManager.showShutDown")) {
+                            String category = rebootField.getBoolean(null)
+                                    ? WallpaperConfig.REBOOT : WallpaperConfig.SHUTDOWN;
+                            Selection selection = select(category);
+                            if (selection == null || !"custom".equals(selection.mode)) {
+                                return;
+                            }
+                            if (applyCustomImage(imageView, selection)) {
                                 forceEinkRefresh(imageView);
+                                log(category + " selected " + selection.displayName);
                             }
                         } catch (Throwable error) {
-                            log("vendor shutdown/reboot replacement failed; using stock image", error);
+                            log("shutdown/reboot replacement failed; using stock image", error);
                         }
                     }
                 });
+    }
+
+    private static Selection select(String category) {
+        Properties config = loadConfiguration();
+        if (config == null || !readBoolean(config, "global.enabled", false)
+                || !readBoolean(config, "category." + category + ".enabled", false)) {
+            return null;
+        }
+        ArrayList<Selection> candidates = new ArrayList<>();
+        if (WallpaperConfig.LOCK.equals(category)) {
+            for (String resource : WallpaperConfig.LOCK_SYSTEM_IMAGES) {
+                if (readBoolean(config, "system.lock." + resource + ".enabled", true)) {
+                    candidates.add(Selection.system(resource, readBoolean(config,
+                            "system.lock." + resource + ".date", true)));
+                }
+            }
+        } else if (readBoolean(config,
+                "system." + category + ".default.enabled", true)) {
+            candidates.add(Selection.system(WallpaperConfig.SYSTEM_DEFAULT, false));
+        }
+        int count = Math.max(0, Math.min(readInt(config, "custom.count", 0), 1000));
+        for (int index = 0; index < count; index++) {
+            String prefix = "custom." + index + '.';
+            String fileName = config.getProperty(prefix + "file");
+            if (fileName == null || !fileName.equals(new File(fileName).getName())
+                    || !readBoolean(config, prefix + "enabled", false)
+                    || !readBoolean(config, prefix + category, false)) {
+                continue;
+            }
+            File image = new File(SystemWallpaperStore.IMAGE_ROOT, fileName);
+            if (isSafeSystemImage(image)) {
+                candidates.add(Selection.custom(image,
+                        WallpaperConfig.LOCK.equals(category)
+                                && readBoolean(config, prefix + "date", true)));
+            }
+        }
+        if (candidates.isEmpty()) {
+            return null;
+        }
+        long next;
+        synchronized (NEXT_INDEX) {
+            Long previous = NEXT_INDEX.get(category);
+            next = previous == null ? System.nanoTime() : previous + 1L;
+            NEXT_INDEX.put(category, next);
+        }
+        return candidates.get((int) Math.floorMod(next, (long) candidates.size()));
+    }
+
+    private static Properties loadConfiguration() {
+        File file = new File(SystemWallpaperStore.CONFIG);
+        if (!file.isFile() || !file.canRead()) {
+            return null;
+        }
+        Properties properties = new Properties();
+        try {
+            FileInputStream input = new FileInputStream(file);
+            try {
+                properties.load(input);
+            } finally {
+                input.close();
+            }
+            return "1".equals(properties.getProperty("format")) ? properties : null;
+        } catch (IOException error) {
+            log("unable to read system-owned configuration", error);
+            return null;
+        }
+    }
+
+    private static boolean isSafeSystemImage(File image) {
+        try {
+            String root = new File(SystemWallpaperStore.IMAGE_ROOT).getCanonicalPath()
+                    + File.separator;
+            return image.getCanonicalPath().startsWith(root)
+                    && image.isFile() && image.canRead();
+        } catch (IOException ignored) {
+            return false;
+        }
+    }
+
+    private static boolean readBoolean(Properties properties, String key, boolean fallback) {
+        String value = properties.getProperty(key);
+        return value == null ? fallback : Boolean.parseBoolean(value);
+    }
+
+    private static int readInt(Properties properties, String key, int fallback) {
+        try {
+            return Integer.parseInt(properties.getProperty(key));
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
+    }
+
+    private static boolean applyCustomImage(ImageView imageView, Selection selection) {
+        Bitmap bitmap = decodeForDisplay(selection.image, imageView.getResources());
+        if (bitmap == null) {
+            log("could not decode custom image " + selection.displayName
+                    + "; using stock image");
+            return false;
+        }
+        imageView.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        imageView.setImageBitmap(bitmap);
+        return true;
     }
 
     private static ImageView findFirstImageView(View view) {
@@ -156,32 +260,41 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
         return null;
     }
 
-    private static boolean applyConfiguredImage(
-            ImageView imageView, String category, boolean landscape, String source)
-            throws IOException {
-        SelectedImage selected = chooseAccessibleImage(imageView.getContext(), category, landscape);
-        if (selected == null) {
-            File directory = new File(ROOT, category);
-            log(source + " matched " + category + " but no readable image was found in "
-                    + directory.getAbsolutePath() + " (exists=" + directory.exists()
-                    + ", canRead=" + directory.canRead() + ')');
-            return false;
+    private static void hideNonImageLeaves(View view, ImageView background) {
+        if (view == background) {
+            return;
         }
-
-        Bitmap bitmap = selected.file != null
-                ? decodeForDisplay(selected.file, imageView.getResources())
-                : decodeForDisplay(selected.uri, imageView.getContext(), imageView.getResources());
-        if (bitmap == null) {
-            log(source + " could not decode " + selected.description
-                    + "; using stock image");
-            return false;
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int index = 0; index < group.getChildCount(); index++) {
+                hideNonImageLeaves(group.getChildAt(index), background);
+            }
+        } else {
+            view.setVisibility(View.GONE);
         }
+    }
 
-        imageView.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        imageView.setImageBitmap(bitmap);
-        log(source + " replaced " + category + " image with "
-                + selected.description);
-        return true;
+    private static Bitmap decodeForDisplay(File image, Resources resources) {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(image.getAbsolutePath(), bounds);
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            return null;
+        }
+        DisplayMetrics metrics = resources.getDisplayMetrics();
+        int targetWidth = Math.max(1, metrics.widthPixels);
+        int targetHeight = Math.max(1, metrics.heightPixels);
+        int sample = 1;
+        while (bounds.outWidth / (sample * 2) >= targetWidth
+                && bounds.outHeight / (sample * 2) >= targetHeight) {
+            sample *= 2;
+        }
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inSampleSize = sample;
+        options.inPreferredConfig = Bitmap.Config.RGB_565;
+        options.inDither = true;
+        options.inScaled = false;
+        return BitmapFactory.decodeFile(image.getAbsolutePath(), options);
     }
 
     private static void forceEinkRefresh(ImageView imageView) {
@@ -190,243 +303,7 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
             forceRefresh.invoke(imageView);
         } catch (Throwable unavailable) {
             imageView.invalidate();
-            log("View.forceRefresh unavailable after shutdown replacement; invalidated view instead");
-        }
-    }
-
-    private static void replaceImageIfConfigured(XC_MethodHook.MethodHookParam param) {
-        try {
-            ImageView imageView = (ImageView) param.thisObject;
-            int resourceId = (Integer) param.args[0];
-            if (resourceId == 0) {
-                return;
-            }
-
-            String resourceName;
-            try {
-                resourceName = imageView.getResources().getResourceEntryName(resourceId);
-            } catch (Resources.NotFoundException ignored) {
-                return;
-            }
-
-            String category = categoryForResource(resourceName);
-            if (category == null) {
-                return;
-            }
-
-            boolean landscape = resourceName.toLowerCase(Locale.US).endsWith("_land")
-                    || imageView.getResources().getConfiguration().orientation
-                    == Configuration.ORIENTATION_LANDSCAPE;
-            if (applyConfiguredImage(imageView, category, landscape,
-                    "resource " + resourceName)) {
-                param.setResult(null);
-            }
-        } catch (Throwable error) {
-            // This code runs in system_server. Any unexpected condition must fall back
-            // to the stock resource instead of destabilizing the process.
-            log("replacement failed; using stock resource", error);
-        }
-    }
-
-    private static String categoryForResource(String resourceName) {
-        String name = resourceName.toLowerCase(Locale.US);
-        if (LOCK_RESOURCE.matcher(name).matches() || "default_standby_logo".equals(name)) {
-            return "lock";
-        }
-        if ("shutdown_window_img".equals(name)
-                || "shutdown_window_img_land".equals(name)
-                || "shoutdown_display_img".equals(name)) {
-            return "shutdown";
-        }
-        if ("reboot_window_img".equals(name) || "reboot_window_img_land".equals(name)) {
-            return "reboot";
-        }
-        return null;
-    }
-
-    private static SelectedImage chooseAccessibleImage(
-            Context context, String category, boolean landscape) throws IOException {
-        File direct = chooseImage(category, landscape);
-        if (direct != null) {
-            return new SelectedImage(direct, null, direct.getAbsolutePath());
-        }
-
-        try {
-            Bundle extras = new Bundle();
-            extras.putBoolean("landscape", landscape);
-            Bundle result = context.getContentResolver().call(
-                    PROVIDER_URI, "select", category, extras);
-            if (result == null) {
-                return null;
-            }
-            Uri uri = result.getParcelable("uri");
-            if (uri == null) {
-                return null;
-            }
-            String name = result.getString("display_name", uri.getLastPathSegment());
-            return new SelectedImage(null, uri, "/storage/emulated/0/Wallpaper/"
-                    + category + "/" + name + " (provider)");
-        } catch (Throwable error) {
-            log("wallpaper provider failed for " + category, error);
-            return null;
-        }
-    }
-
-    private static File chooseImage(String category, boolean landscape) throws IOException {
-        File categoryDirectory = new File(ROOT, category);
-        File orientationDirectory = new File(
-                categoryDirectory, landscape ? "landscape" : "portrait");
-
-        File activeDirectory = hasImages(orientationDirectory)
-                ? orientationDirectory : categoryDirectory;
-        File[] images = listImages(activeDirectory);
-        if (images.length == 0) {
-            return null;
-        }
-
-        Arrays.sort(images, new Comparator<File>() {
-            @Override
-            public int compare(File left, File right) {
-                int byName = left.getName().compareToIgnoreCase(right.getName());
-                return byName != 0 ? byName : left.getAbsolutePath().compareTo(right.getAbsolutePath());
-            }
-        });
-
-        String rootPath = ROOT.getCanonicalPath() + File.separator;
-        String key = category + ':' + (landscape ? "landscape" : "portrait")
-                + ':' + activeDirectory.getCanonicalPath();
-        long index;
-        synchronized (NEXT_INDEX) {
-            Long previous = NEXT_INDEX.get(key);
-            index = previous == null ? System.nanoTime() : previous + 1L;
-            NEXT_INDEX.put(key, index);
-        }
-
-        int selectedIndex = (int) Math.floorMod(index, (long) images.length);
-        File selected = images[selectedIndex];
-        String selectedPath = selected.getCanonicalPath();
-        if (!selectedPath.startsWith(rootPath) || !selected.isFile() || !selected.canRead()) {
-            log("rejected unreadable or out-of-tree path: " + selectedPath);
-            return null;
-        }
-        return selected;
-    }
-
-    private static boolean hasImages(File directory) {
-        return listImages(directory).length > 0;
-    }
-
-    private static File[] listImages(File directory) {
-        if (!directory.isDirectory() || !directory.canRead()) {
-            return new File[0];
-        }
-        File[] files = directory.listFiles(new FileFilter() {
-            @Override
-            public boolean accept(File file) {
-                if (!file.isFile() || !file.canRead()) {
-                    return false;
-                }
-                String name = file.getName().toLowerCase(Locale.US);
-                return name.endsWith(".png")
-                        || name.endsWith(".jpg")
-                        || name.endsWith(".jpeg")
-                        || name.endsWith(".webp")
-                        || name.endsWith(".bmp");
-            }
-        });
-        return files == null ? new File[0] : files;
-    }
-
-    private static Bitmap decodeForDisplay(File file, Resources resources) {
-        BitmapFactory.Options bounds = new BitmapFactory.Options();
-        bounds.inJustDecodeBounds = true;
-        BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
-            return null;
-        }
-
-        DisplayMetrics metrics = resources.getDisplayMetrics();
-        int targetWidth = Math.max(1, metrics.widthPixels);
-        int targetHeight = Math.max(1, metrics.heightPixels);
-        int sampleSize = 1;
-        while (bounds.outWidth / (sampleSize * 2) >= targetWidth
-                && bounds.outHeight / (sampleSize * 2) >= targetHeight) {
-            sampleSize *= 2;
-        }
-
-        BitmapFactory.Options options = new BitmapFactory.Options();
-        options.inSampleSize = sampleSize;
-        options.inPreferredConfig = Bitmap.Config.RGB_565;
-        options.inDither = true;
-        options.inScaled = false;
-        return BitmapFactory.decodeFile(file.getAbsolutePath(), options);
-    }
-
-    private static Bitmap decodeForDisplay(Uri uri, Context context, Resources resources) {
-        ContentResolver resolver = context.getContentResolver();
-        BitmapFactory.Options bounds = new BitmapFactory.Options();
-        bounds.inJustDecodeBounds = true;
-        ParcelFileDescriptor descriptor = null;
-        try {
-            descriptor = resolver.openFileDescriptor(uri, "r");
-            if (descriptor == null) {
-                return null;
-            }
-            BitmapFactory.decodeFileDescriptor(descriptor.getFileDescriptor(), null, bounds);
-        } catch (Throwable error) {
-            log("unable to read image bounds through provider: " + uri, error);
-            return null;
-        } finally {
-            closeQuietly(descriptor);
-        }
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
-            return null;
-        }
-
-        DisplayMetrics metrics = resources.getDisplayMetrics();
-        int targetWidth = Math.max(1, metrics.widthPixels);
-        int targetHeight = Math.max(1, metrics.heightPixels);
-        int sampleSize = 1;
-        while (bounds.outWidth / (sampleSize * 2) >= targetWidth
-                && bounds.outHeight / (sampleSize * 2) >= targetHeight) {
-            sampleSize *= 2;
-        }
-
-        BitmapFactory.Options options = new BitmapFactory.Options();
-        options.inSampleSize = sampleSize;
-        options.inPreferredConfig = Bitmap.Config.RGB_565;
-        options.inDither = true;
-        options.inScaled = false;
-        try {
-            descriptor = resolver.openFileDescriptor(uri, "r");
-            return descriptor == null ? null : BitmapFactory.decodeFileDescriptor(
-                    descriptor.getFileDescriptor(), null, options);
-        } catch (Throwable error) {
-            log("unable to decode image through provider: " + uri, error);
-            return null;
-        } finally {
-            closeQuietly(descriptor);
-        }
-    }
-
-    private static void closeQuietly(ParcelFileDescriptor descriptor) {
-        if (descriptor != null) {
-            try {
-                descriptor.close();
-            } catch (IOException ignored) {
-            }
-        }
-    }
-
-    private static final class SelectedImage {
-        final File file;
-        final Uri uri;
-        final String description;
-
-        SelectedImage(File file, Uri uri, String description) {
-            this.file = file;
-            this.uri = uri;
-            this.description = description;
+            log("View.forceRefresh unavailable; invalidated shutdown view instead");
         }
     }
 
@@ -438,5 +315,30 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
     private static void log(String message, Throwable error) {
         Log.e(TAG, message, error);
         XposedBridge.log(TAG + ": " + message + "\n" + Log.getStackTraceString(error));
+    }
+
+    private static final class Selection {
+        final String mode;
+        final File image;
+        final String resourceName;
+        final String displayName;
+        final boolean showDate;
+
+        private Selection(String mode, File image, String resourceName,
+                String displayName, boolean showDate) {
+            this.mode = mode;
+            this.image = image;
+            this.resourceName = resourceName;
+            this.displayName = displayName;
+            this.showDate = showDate;
+        }
+
+        static Selection system(String resourceName, boolean showDate) {
+            return new Selection("system", null, resourceName, resourceName, showDate);
+        }
+
+        static Selection custom(File image, boolean showDate) {
+            return new Selection("custom", image, null, image.getName(), showDate);
+        }
     }
 }

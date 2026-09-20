@@ -11,3 +11,9 @@ local.properties
 /lsposed-*.png
 /lsposed-*.xml
 /module-*.xml
+/wallpaper-ui*
+/runtime-ui*
+/root-prompt*
+/magisk-ui*
+/su-ui*
+/final-ui*

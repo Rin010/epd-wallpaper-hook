@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">E-paper Wallpaper Hook</string>
-    <string name="xposed_description">Dynamically loads lock, shutdown, and reboot images from internal storage.</string>
+    <string name="app_name">电纸书画面管理</string>
+    <string name="xposed_description">预览并轮换内置存储中的锁屏、关机和重启图片。</string>
 </resources>
