@@ -1,0 +1,13 @@
+.gradle/
+**/build/
+local.properties
+*.iml
+
+/xposed-stubs/classes/
+/work/
+
+/after-tap.*
+/lsposed-*.apk
+/lsposed-*.png
+/lsposed-*.xml
+/module-*.xml
