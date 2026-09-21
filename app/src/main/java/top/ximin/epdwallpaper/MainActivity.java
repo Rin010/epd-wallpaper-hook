@@ -44,6 +44,7 @@ public final class MainActivity extends Activity {
     private LinearLayout root;
     private int currentPage;
     private boolean importing;
+    private AlertDialog importProgressDialog;
     private final ArrayList<RadioButton> shutdownRadios = new ArrayList<>();
     private final ArrayList<RadioButton> rebootRadios = new ArrayList<>();
 
@@ -69,6 +70,12 @@ public final class MainActivity extends Activity {
         if (!importing) {
             syncSystemStore(false);
         }
+    }
+
+    @Override
+    protected void onDestroy() {
+        hideImportProgress();
+        super.onDestroy();
     }
 
     @Override
@@ -113,7 +120,9 @@ public final class MainActivity extends Activity {
         TextView title = text("电纸书画面管理", 22, true);
         heading.addView(title, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        TextView state = text(importing ? "处理中…" : "16级灰度 · 点图预览", 13, false);
+        TextView state = text(importQueue != null
+                ? "导入中…" : (importing ? "处理中…" : "16级灰度 · 点图预览"),
+                13, false);
         state.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
         heading.addView(state, wrapWrap());
         root.addView(heading, matchWrap());
@@ -129,7 +138,8 @@ public final class MainActivity extends Activity {
         root.addView(switches, matchWrap());
 
         LinearLayout actions = horizontal();
-        Button add = mainButton(importing ? "正在处理" : "导入图片");
+        Button add = mainButton(importQueue != null
+                ? "导入中…" : (importing ? "正在处理" : "导入图片"));
         add.setEnabled(!importing);
         add.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -457,7 +467,8 @@ public final class MainActivity extends Activity {
                         @Override
                         public void run() {
                             if (inspection.exactSize()) {
-                                importCurrent(uri, inspection, ImageImporter.MODE_POINT_WHITE);
+                                showImportProgressAndStart(
+                                        uri, inspection, ImageImporter.MODE_POINT_WHITE);
                             } else {
                                 showAdaptationDialog(uri, inspection);
                             }
@@ -516,7 +527,8 @@ public final class MainActivity extends Activity {
                     @Override
                     public void onClick(DialogInterface dialog, int which) {
                         resolved[0] = true;
-                        importCurrent(uri, inspection, modes.get(which));
+                        dialog.dismiss();
+                        showImportProgressAndStart(uri, inspection, modes.get(which));
                     }
                 })
                 .setNegativeButton("跳过这张", new DialogInterface.OnClickListener() {
@@ -541,6 +553,34 @@ public final class MainActivity extends Activity {
             }
         });
         dialog.show();
+    }
+
+    private void showImportProgressAndStart(final Uri uri,
+            final ImageImporter.Inspection inspection, final String mode) {
+        hideImportProgress();
+        importProgressDialog = new AlertDialog.Builder(this)
+                .setTitle("导入中…")
+                .setMessage("正在适配分辨率并转换为16级灰度，请稍候")
+                .setCancelable(false)
+                .create();
+        importProgressDialog.show();
+        View decor = importProgressDialog.getWindow() == null
+                ? root : importProgressDialog.getWindow().getDecorView();
+        decor.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                importCurrent(uri, inspection, mode);
+            }
+        }, 150);
+    }
+
+    private void hideImportProgress() {
+        if (importProgressDialog != null) {
+            if (importProgressDialog.isShowing()) {
+                importProgressDialog.dismiss();
+            }
+            importProgressDialog = null;
+        }
     }
 
     private String pointDescription(ImageImporter.Inspection info, String color) {
@@ -574,7 +614,12 @@ public final class MainActivity extends Activity {
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
-                        inspectNextImport();
+                        if (importQueue != null && importPosition >= importQueue.size()) {
+                            finishImportQueue();
+                        } else {
+                            hideImportProgress();
+                            inspectNextImport();
+                        }
                     }
                 });
             }
@@ -597,6 +642,7 @@ public final class MainActivity extends Activity {
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
+                        hideImportProgress();
                         importing = false;
                         importQueue = null;
                         rebuild();
