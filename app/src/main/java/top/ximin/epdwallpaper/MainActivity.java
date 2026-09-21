@@ -3,30 +3,27 @@ package top.ximin.epdwallpaper;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.ClipData;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
-import android.content.res.Configuration;
-import android.content.res.Resources;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
-import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
+import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.CompoundButton;
-import android.widget.FrameLayout;
-import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
+import android.widget.RadioButton;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -35,32 +32,38 @@ import java.io.File;
 import java.io.FileFilter;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.text.SimpleDateFormat;
-import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 
 public final class MainActivity extends Activity {
     private static final int STORAGE_PERMISSION_REQUEST = 100;
     private static final int IMPORT_IMAGES_REQUEST = 101;
+    private static final int ITEMS_PER_PAGE = 4;
 
     private SharedPreferences preferences;
-    private LinearLayout content;
-    private String pendingImportMode = ImageImporter.MODE_FILL;
+    private LinearLayout root;
+    private int currentPage;
     private boolean importing;
+    private final ArrayList<RadioButton> shutdownRadios = new ArrayList<>();
+    private final ArrayList<RadioButton> rebootRadios = new ArrayList<>();
+
+    private ArrayList<Uri> importQueue;
+    private int importPosition;
+    private int importSucceeded;
+    private int importFailed;
+    private String importLastError;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         preferences = WallpaperConfig.preferences(this);
+        WallpaperConfig.migrateUnifiedModel(this, preferences);
 
-        ScrollView scrollView = new ScrollView(this);
-        content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(dp(28), dp(24), dp(28), dp(40));
-        scrollView.addView(content, new ScrollView.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        setContentView(scrollView);
-
+        root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(10), dp(8), dp(10), dp(8));
+        root.setBackgroundColor(Color.WHITE);
+        setContentView(root);
         rebuild();
         migrateLegacyAutomatically();
         if (!importing) {
@@ -72,11 +75,9 @@ public final class MainActivity extends Activity {
     public void onRequestPermissionsResult(
             int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == STORAGE_PERMISSION_REQUEST) {
-            if (grantResults.length > 0
-                    && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                importLegacyDirectory();
-            }
+        if (requestCode == STORAGE_PERMISSION_REQUEST && grantResults.length > 0
+                && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            importLegacyDirectory();
         }
     }
 
@@ -86,7 +87,7 @@ public final class MainActivity extends Activity {
         if (requestCode != IMPORT_IMAGES_REQUEST || resultCode != RESULT_OK || data == null) {
             return;
         }
-        final ArrayList<Uri> images = new ArrayList<>();
+        ArrayList<Uri> images = new ArrayList<>();
         ClipData clip = data.getClipData();
         if (clip != null) {
             for (int index = 0; index < clip.getItemCount(); index++) {
@@ -99,73 +100,482 @@ public final class MainActivity extends Activity {
             images.add(data.getData());
         }
         if (!images.isEmpty()) {
-            importImages(images, pendingImportMode);
+            beginImportQueue(images);
         }
     }
 
-    private void requestStoragePermissionIfNeeded() {
-        if (checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE)
-                != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[] {
-                    Manifest.permission.READ_EXTERNAL_STORAGE
-            }, STORAGE_PERMISSION_REQUEST);
+    private void rebuild() {
+        root.removeAllViews();
+        shutdownRadios.clear();
+        rebootRadios.clear();
+
+        LinearLayout heading = horizontal();
+        TextView title = text("电纸书画面管理", 22, true);
+        heading.addView(title, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        TextView state = text(importing ? "处理中…" : "16级灰度 · 点图预览", 13, false);
+        state.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
+        heading.addView(state, wrapWrap());
+        root.addView(heading, matchWrap());
+
+        LinearLayout switches = horizontal();
+        addSwitch(switches, "总开关", null, WallpaperConfig.isGlobalEnabled(preferences));
+        addSwitch(switches, "锁屏", WallpaperConfig.LOCK,
+                WallpaperConfig.isCategoryEnabled(preferences, WallpaperConfig.LOCK));
+        addSwitch(switches, "关机", WallpaperConfig.SHUTDOWN,
+                WallpaperConfig.isCategoryEnabled(preferences, WallpaperConfig.SHUTDOWN));
+        addSwitch(switches, "重启", WallpaperConfig.REBOOT,
+                WallpaperConfig.isCategoryEnabled(preferences, WallpaperConfig.REBOOT));
+        root.addView(switches, matchWrap());
+
+        LinearLayout actions = horizontal();
+        Button add = mainButton(importing ? "正在处理" : "导入图片");
+        add.setEnabled(!importing);
+        add.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                openImagePicker();
+            }
+        });
+        actions.addView(add, weighted());
+        Button sync = mainButton("同步到系统");
+        sync.setEnabled(!importing);
+        sync.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                syncSystemStore(true);
+            }
+        });
+        actions.addView(sync, weighted());
+        Button legacy = mainButton("迁移旧图库");
+        legacy.setEnabled(!importing);
+        legacy.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                if (checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE)
+                        == PackageManager.PERMISSION_GRANTED) {
+                    importLegacyDirectory();
+                } else {
+                    requestPermissions(new String[] {Manifest.permission.READ_EXTERNAL_STORAGE},
+                            STORAGE_PERMISSION_REQUEST);
+                }
+            }
+        });
+        actions.addView(legacy, weighted());
+        root.addView(actions, matchWrap());
+
+        List<WallpaperItem> items = WallpaperItem.all(this);
+        int pageCount = Math.max(1, (items.size() + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE);
+        currentPage = Math.max(0, Math.min(currentPage, pageCount - 1));
+        LinearLayout grid = new LinearLayout(this);
+        grid.setOrientation(LinearLayout.VERTICAL);
+        for (int rowIndex = 0; rowIndex < 2; rowIndex++) {
+            LinearLayout row = horizontal();
+            grid.addView(row, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+            for (int column = 0; column < 2; column++) {
+                int index = currentPage * ITEMS_PER_PAGE + rowIndex * 2 + column;
+                if (index < items.size()) {
+                    row.addView(createCard(items.get(index)), cardWeight());
+                } else {
+                    View placeholder = new View(this);
+                    row.addView(placeholder, cardWeight());
+                }
+            }
         }
+
+        LinearLayout pager = horizontal();
+        pager.setGravity(Gravity.CENTER_VERTICAL);
+        Button previous = mainButton("上一页");
+        previous.setEnabled(currentPage > 0);
+        previous.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                currentPage--;
+                rebuild();
+            }
+        });
+        pager.addView(previous, weighted());
+        TextView page = text(String.format(Locale.CHINA, "第 %d / %d 页 · 共 %d 张",
+                currentPage + 1, pageCount, items.size()), 14, true);
+        page.setGravity(Gravity.CENTER);
+        pager.addView(page, weighted(2f));
+        Button next = mainButton("下一页");
+        next.setEnabled(currentPage + 1 < pageCount);
+        next.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                currentPage++;
+                rebuild();
+            }
+        });
+        pager.addView(next, weighted());
+        root.addView(pager, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(50)));
+        root.addView(grid, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
     }
 
-    private void chooseImportMode() {
-        new AlertDialog.Builder(this)
-                .setTitle("图片如何适配屏幕？")
-                .setItems(new String[] {
-                        "铺满屏幕（推荐，居中裁剪边缘）",
-                        "完整显示（不裁剪，空白处填充白色）",
-                        "完整显示（不裁剪，空白处填充黑色）"
-                }, new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        if (which == 0) {
-                            pendingImportMode = ImageImporter.MODE_FILL;
-                        } else if (which == 1) {
-                            pendingImportMode = ImageImporter.MODE_FIT_WHITE;
-                        } else {
-                            pendingImportMode = ImageImporter.MODE_FIT_BLACK;
-                        }
-                        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-                        intent.addCategory(Intent.CATEGORY_OPENABLE);
-                        intent.setType("image/*");
-                        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
-                        startActivityForResult(intent, IMPORT_IMAGES_REQUEST);
-                    }
-                })
-                .setNegativeButton("取消", null)
-                .show();
+    private View createCard(final WallpaperItem item) {
+        LinearLayout card = horizontal();
+        card.setPadding(dp(7), dp(7), dp(7), dp(7));
+        LinearLayout.LayoutParams own = cardWeight();
+        own.setMargins(dp(3), dp(3), dp(3), dp(3));
+        card.setLayoutParams(own);
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(0xFFF4F4F4);
+        background.setStroke(dp(1), 0xFF666666);
+        background.setCornerRadius(dp(3));
+        card.setBackground(background);
+
+        LinearLayout visual = new LinearLayout(this);
+        visual.setOrientation(LinearLayout.VERTICAL);
+        visual.setGravity(Gravity.CENTER);
+        final WallpaperPreviewView preview = new WallpaperPreviewView(
+                this, item, WallpaperConfig.getDateMode(preferences, item), false);
+        preview.setContentDescription(item.title + "，单击全屏预览");
+        preview.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                showFullscreenPreview(item);
+            }
+        });
+        visual.addView(preview, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        TextView name = text(item.title, 13, true);
+        name.setGravity(Gravity.CENTER);
+        name.setSingleLine(true);
+        visual.addView(name, matchWrap());
+        card.addView(visual, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.MATCH_PARENT, 1.45f));
+
+        LinearLayout controls = new LinearLayout(this);
+        controls.setOrientation(LinearLayout.VERTICAL);
+        controls.setGravity(Gravity.CENTER_VERTICAL);
+        controls.setPadding(dp(6), 0, 0, 0);
+        card.addView(controls, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.MATCH_PARENT, 0.55f));
+
+        if (WallpaperConfig.isCategoryEnabled(preferences, WallpaperConfig.LOCK)) {
+            final CheckBox lock = new CheckBox(this);
+            lock.setText("锁屏");
+            lock.setTextSize(14);
+            lock.setChecked(WallpaperConfig.isLockSelected(preferences, item));
+            lock.setPadding(0, 0, 0, 0);
+            lock.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+                @Override
+                public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                    WallpaperConfig.setLockSelected(preferences, item, isChecked);
+                    SystemWallpaperStore.syncConfigurationAsync(MainActivity.this, preferences);
+                }
+            });
+            controls.addView(lock, matchWrap());
+
+            final Button date = compactButton(dateLabel(
+                    WallpaperConfig.getDateMode(preferences, item)));
+            date.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View view) {
+                    String next = WallpaperConfig.nextDateMode(
+                            WallpaperConfig.getDateMode(preferences, item));
+                    WallpaperConfig.setDateMode(preferences, item, next);
+                    date.setText(dateLabel(next));
+                    preview.setDateMode(next);
+                    SystemWallpaperStore.syncConfigurationAsync(MainActivity.this, preferences);
+                }
+            });
+            controls.addView(date, wrapWrap());
+        }
+
+        if (WallpaperConfig.isCategoryEnabled(preferences, WallpaperConfig.SHUTDOWN)) {
+            RadioButton shutdown = roleRadio(item, WallpaperConfig.SHUTDOWN, "关机");
+            shutdownRadios.add(shutdown);
+            controls.addView(shutdown, matchWrap());
+        }
+        if (WallpaperConfig.isCategoryEnabled(preferences, WallpaperConfig.REBOOT)) {
+            RadioButton reboot = roleRadio(item, WallpaperConfig.REBOOT, "重启");
+            rebootRadios.add(reboot);
+            controls.addView(reboot, matchWrap());
+        }
+        if (!item.system) {
+            Button delete = compactButton("删除");
+            delete.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View view) {
+                    confirmDelete(item.file);
+                }
+            });
+            controls.addView(delete, wrapWrap());
+        }
+        return card;
     }
 
-    private void importImages(final ArrayList<Uri> images, final String mode) {
+    private RadioButton roleRadio(final WallpaperItem item,
+            final String category, String label) {
+        RadioButton radio = new RadioButton(this);
+        radio.setTag(item.id);
+        radio.setText(label);
+        radio.setTextSize(14);
+        radio.setPadding(0, 0, 0, 0);
+        radio.setChecked(item.id.equals(
+                WallpaperConfig.getSelectedItem(preferences, category)));
+        radio.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                WallpaperConfig.setSelectedItem(preferences, category, item);
+                ArrayList<RadioButton> radios = WallpaperConfig.SHUTDOWN.equals(category)
+                        ? shutdownRadios : rebootRadios;
+                for (RadioButton candidate : radios) {
+                    candidate.setChecked(item.id.equals(candidate.getTag()));
+                }
+                SystemWallpaperStore.syncConfigurationAsync(MainActivity.this, preferences);
+            }
+        });
+        return radio;
+    }
+
+    private void addSwitch(LinearLayout row, String label,
+            final String category, boolean checked) {
+        Switch control = new Switch(this);
+        control.setText(label);
+        control.setTextSize(14);
+        control.setChecked(checked);
+        control.setGravity(Gravity.CENTER);
+        control.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                String key = category == null
+                        ? "global_enabled" : "category_enabled:" + category;
+                preferences.edit().putBoolean(key, isChecked).commit();
+                SystemWallpaperStore.syncConfigurationAsync(MainActivity.this, preferences);
+                if (category != null) {
+                    rebuild();
+                }
+            }
+        });
+        row.addView(control, weighted());
+    }
+
+    private void showFullscreenPreview(WallpaperItem item) {
+        final Dialog dialog = new Dialog(this,
+                android.R.style.Theme_Material_Light_NoActionBar_Fullscreen);
+        WallpaperPreviewView preview = new WallpaperPreviewView(
+                this, item, WallpaperConfig.getDateMode(preferences, item), true);
+        preview.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                dialog.dismiss();
+            }
+        });
+        dialog.setContentView(preview, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,
+                    WindowManager.LayoutParams.FLAG_FULLSCREEN);
+            window.getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+        }
+        dialog.show();
+    }
+
+    private void openImagePicker() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("image/*");
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+        startActivityForResult(intent, IMPORT_IMAGES_REQUEST);
+    }
+
+    private void beginImportQueue(ArrayList<Uri> images) {
         if (importing) {
             return;
         }
         importing = true;
+        importQueue = images;
+        importPosition = 0;
+        importSucceeded = 0;
+        importFailed = 0;
+        importLastError = null;
         rebuild();
-        Toast.makeText(this, "正在处理 " + images.size() + " 张图片…",
-                Toast.LENGTH_SHORT).show();
+        inspectNextImport();
+    }
+
+    private void inspectNextImport() {
+        if (importQueue == null || importPosition >= importQueue.size()) {
+            finishImportQueue();
+            return;
+        }
+        final Uri uri = importQueue.get(importPosition);
         new Thread(new Runnable() {
             @Override
             public void run() {
-                int succeeded = 0;
-                String lastError = null;
-                for (Uri image : images) {
-                    try {
-                        ImageImporter.Result result =
-                                ImageImporter.importUri(MainActivity.this, image, mode);
-                        WallpaperConfig.initializeImportedItem(preferences, result);
-                        succeeded++;
-                    } catch (Throwable error) {
-                        lastError = error.getMessage();
-                    }
+                try {
+                    final ImageImporter.Inspection inspection =
+                            ImageImporter.inspect(MainActivity.this, uri);
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (inspection.exactSize()) {
+                                importCurrent(uri, inspection, ImageImporter.MODE_POINT_WHITE);
+                            } else {
+                                showAdaptationDialog(uri, inspection);
+                            }
+                        }
+                    });
+                } catch (final Throwable error) {
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            recordImportFailure(error);
+                            importPosition++;
+                            inspectNextImport();
+                        }
+                    });
                 }
-                finishImport(succeeded, images.size() - succeeded, lastError);
+            }
+        }, "EpdWallpaper-inspect").start();
+    }
+
+    private void showAdaptationDialog(final Uri uri,
+            final ImageImporter.Inspection inspection) {
+        final ArrayList<String> labels = new ArrayList<>();
+        final ArrayList<String> modes = new ArrayList<>();
+        if (inspection.aspect == ImageImporter.ASPECT_WIDER) {
+            labels.add("左右裁切（等比铺满屏幕）\n等比缩放到铺满屏幕，左右超出部分居中裁切");
+            modes.add(ImageImporter.MODE_CROP);
+            labels.add("上下填充黑（等比完整显示）\n等比缩放到完整显示，上下空白填黑");
+            modes.add(ImageImporter.MODE_FIT_BLACK);
+            labels.add("上下填充白（等比完整显示）\n等比缩放到完整显示，上下空白填白");
+            modes.add(ImageImporter.MODE_FIT_WHITE);
+        } else if (inspection.aspect == ImageImporter.ASPECT_TALLER) {
+            labels.add("上下裁切（等比铺满屏幕）\n等比缩放到铺满屏幕，上下超出部分居中裁切");
+            modes.add(ImageImporter.MODE_CROP);
+            labels.add("左右填充黑（等比完整显示）\n等比缩放到完整显示，左右空白填黑");
+            modes.add(ImageImporter.MODE_FIT_BLACK);
+            labels.add("左右填充白（等比完整显示）\n等比缩放到完整显示，左右空白填白");
+            modes.add(ImageImporter.MODE_FIT_WHITE);
+        } else {
+            String action = inspection.orientedWidth < inspection.targetWidth
+                    ? "等比放大" : "等比缩小";
+            labels.add(action + "至屏幕\n宽高比一致，不裁切、不填充、不做非等比变形");
+            modes.add(ImageImporter.MODE_SCALE);
+        }
+        labels.add(pointDescription(inspection, "黑色"));
+        modes.add(ImageImporter.MODE_POINT_BLACK);
+        labels.add(pointDescription(inspection, "白色"));
+        modes.add(ImageImporter.MODE_POINT_WHITE);
+
+        final boolean[] resolved = {false};
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("适配图片 " + inspection.orientedWidth + "×"
+                        + inspection.orientedHeight + " → 屏幕 "
+                        + inspection.targetWidth + "×" + inspection.targetHeight)
+                .setItems(labels.toArray(new String[labels.size()]),
+                        new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        resolved[0] = true;
+                        importCurrent(uri, inspection, modes.get(which));
+                    }
+                })
+                .setNegativeButton("跳过这张", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        resolved[0] = true;
+                        importFailed++;
+                        importPosition++;
+                        inspectNextImport();
+                    }
+                })
+                .create();
+        dialog.setOnCancelListener(new DialogInterface.OnCancelListener() {
+            @Override
+            public void onCancel(DialogInterface dialog) {
+                if (!resolved[0]) {
+                    resolved[0] = true;
+                    importFailed++;
+                    importPosition++;
+                    inspectNextImport();
+                }
+            }
+        });
+        dialog.show();
+    }
+
+    private String pointDescription(ImageImporter.Inspection info, String color) {
+        String behavior;
+        if (info.orientedWidth <= info.targetWidth
+                && info.orientedHeight <= info.targetHeight) {
+            behavior = "原始像素不缩放，居中显示；尺寸不足处填充" + color;
+        } else if (info.orientedWidth >= info.targetWidth
+                && info.orientedHeight >= info.targetHeight) {
+            behavior = "原始像素不缩放，超出屏幕的方向居中裁切；不足处填充" + color;
+        } else {
+            behavior = "原始像素不缩放；超出方向居中裁切，不足方向居中填充" + color;
+        }
+        return "居中显示（点对点，" + color + "填充）\n" + behavior;
+    }
+
+    private void importCurrent(final Uri uri, final ImageImporter.Inspection inspection,
+            final String mode) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    ImageImporter.Result result = ImageImporter.importUri(
+                            MainActivity.this, uri, inspection, mode);
+                    WallpaperConfig.initializeImportedItem(preferences, result);
+                    importSucceeded++;
+                } catch (Throwable error) {
+                    recordImportFailure(error);
+                }
+                importPosition++;
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        inspectNextImport();
+                    }
+                });
             }
         }, "EpdWallpaper-import").start();
+    }
+
+    private void recordImportFailure(Throwable error) {
+        importFailed++;
+        importLastError = error.getMessage();
+    }
+
+    private void finishImportQueue() {
+        final int succeeded = importSucceeded;
+        final int failed = importFailed;
+        final String lastError = importLastError;
+        SystemWallpaperStore.syncAllAsync(this, preferences,
+                new SystemWallpaperStore.Callback() {
+            @Override
+            public void onComplete(final boolean success, final String message) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        importing = false;
+                        importQueue = null;
+                        rebuild();
+                        String result = "已导入 " + succeeded + " 张";
+                        if (failed > 0) {
+                            result += "，跳过/失败 " + failed + " 张";
+                            if (lastError != null && lastError.length() > 0) {
+                                result += "：" + lastError;
+                            }
+                        }
+                        if (!success) {
+                            result += "；系统同步失败：" + message;
+                        }
+                        Toast.makeText(MainActivity.this, result, Toast.LENGTH_LONG).show();
+                    }
+                });
+            }
+        });
     }
 
     private void migrateLegacyAutomatically() {
@@ -177,9 +587,9 @@ public final class MainActivity extends Activity {
         File[] legacy = legacyImages();
         if (legacy.length == 0) {
             preferences.edit().putBoolean("legacy_migration_done", true).apply();
-            return;
+        } else {
+            importLegacyDirectory();
         }
-        importLegacyDirectory();
     }
 
     private void importLegacyDirectory() {
@@ -189,13 +599,11 @@ public final class MainActivity extends Activity {
         final File[] legacy = legacyImages();
         if (legacy.length == 0) {
             preferences.edit().putBoolean("legacy_migration_done", true).apply();
-            Toast.makeText(this, "旧目录中没有可迁移的图片", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "旧目录中没有可迁移图片", Toast.LENGTH_LONG).show();
             return;
         }
         importing = true;
         rebuild();
-        Toast.makeText(this, "正在迁移并适配 " + legacy.length + " 张旧图片…",
-                Toast.LENGTH_SHORT).show();
         new Thread(new Runnable() {
             @Override
             public void run() {
@@ -203,8 +611,13 @@ public final class MainActivity extends Activity {
                 String lastError = null;
                 for (File source : legacy) {
                     try {
+                        Uri uri = Uri.fromFile(source);
+                        ImageImporter.Inspection inspection =
+                                ImageImporter.inspect(MainActivity.this, uri);
+                        String mode = inspection.exactSize()
+                                ? ImageImporter.MODE_POINT_WHITE : ImageImporter.MODE_CROP;
                         ImageImporter.Result result = ImageImporter.importUri(
-                                MainActivity.this, Uri.fromFile(source), ImageImporter.MODE_FILL);
+                                MainActivity.this, uri, inspection, mode);
                         WallpaperConfig.initializeMigratedItem(preferences, source, result);
                         succeeded++;
                     } catch (Throwable error) {
@@ -214,7 +627,15 @@ public final class MainActivity extends Activity {
                 if (succeeded == legacy.length) {
                     preferences.edit().putBoolean("legacy_migration_done", true).commit();
                 }
-                finishImport(succeeded, legacy.length - succeeded, lastError);
+                importSucceeded = succeeded;
+                importFailed = legacy.length - succeeded;
+                importLastError = lastError;
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        finishImportQueue();
+                    }
+                });
             }
         }, "EpdWallpaper-migrate").start();
     }
@@ -231,35 +652,6 @@ public final class MainActivity extends Activity {
             }
         });
         return files == null ? new File[0] : files;
-    }
-
-    private void finishImport(final int succeeded, final int failed, final String lastError) {
-        SystemWallpaperStore.syncAllAsync(this, preferences,
-                new SystemWallpaperStore.Callback() {
-            @Override
-            public void onComplete(final boolean syncSuccess, final String syncMessage) {
-                String message = "已导入 " + succeeded + " 张";
-                if (failed > 0) {
-                    message += "，失败 " + failed + " 张";
-                    if (lastError != null && lastError.length() > 0) {
-                        message += "：" + lastError;
-                    }
-                }
-                if (!syncSuccess) {
-                    message += "；尚未同步到系统：" + syncMessage;
-                }
-                final String completedMessage = message;
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        importing = false;
-                        rebuild();
-                        Toast.makeText(MainActivity.this,
-                                completedMessage, Toast.LENGTH_LONG).show();
-                    }
-                });
-            }
-        });
     }
 
     private void syncSystemStore(final boolean alwaysReport) {
@@ -288,314 +680,17 @@ public final class MainActivity extends Activity {
         });
     }
 
-    private void rebuild() {
-        content.removeAllViews();
-        addTitle("电纸书画面管理", 30);
-        addParagraph("自定义图片由应用安全保存在内部图库，不需要固定目录。每张图片可同时用于锁屏、关机和重启；已启用且勾选对应用途的图片会参与轮换。修改配置立即生效，无需重启。", 18);
-        addParagraph("锁屏实际读取的是 /data/system/epd-wallpaper 中的系统副本；仅导入或改配置时使用 Root 同步，锁屏时不跨进程传图。", 16);
-
-        Button sync = addButton(importing ? "正在同步…" : "立即同步到系统");
-        sync.setEnabled(!importing);
-        sync.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                syncSystemStore(true);
-            }
-        });
-
-        final Switch global = addSwitchRow(
-                "启用画面替换", WallpaperConfig.isGlobalEnabled(preferences));
-        global.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-            @Override
-            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
-                preferences.edit().putBoolean("global_enabled", isChecked).commit();
-                SystemWallpaperStore.syncConfigurationAsync(MainActivity.this, preferences);
-            }
-        });
-
-        addTitle("功能开关", 24);
-        addCategorySwitch("锁屏画面", WallpaperConfig.LOCK);
-        addCategorySwitch("关机画面", WallpaperConfig.SHUTDOWN);
-        addCategorySwitch("重启画面", WallpaperConfig.REBOOT);
-
-        addTitle("系统自带图片", 24);
-        addParagraph("系统图片默认启用。它们只能禁用，不能删除。", 16);
-        for (int index = 0; index < WallpaperConfig.LOCK_SYSTEM_IMAGES.length; index++) {
-            String resource = WallpaperConfig.LOCK_SYSTEM_IMAGES[index];
-            addSystemCard(WallpaperConfig.LOCK, resource,
-                    "系统锁屏 " + (index + 1), resource, true);
-        }
-        addSystemCard(WallpaperConfig.SHUTDOWN, WallpaperConfig.SYSTEM_DEFAULT,
-                "系统关机画面", systemPreviewResource(WallpaperConfig.SHUTDOWN), false);
-        addSystemCard(WallpaperConfig.REBOOT, WallpaperConfig.SYSTEM_DEFAULT,
-                "系统重启画面", systemPreviewResource(WallpaperConfig.REBOOT), false);
-
-        addTitle("自定义图片", 24);
-        DisplayMetrics display = new DisplayMetrics();
-        getWindowManager().getDefaultDisplay().getRealMetrics(display);
-        int managedWidth = Math.min(display.widthPixels, display.heightPixels);
-        int managedHeight = Math.max(display.widthPixels, display.heightPixels);
-        addParagraph("点“导入图片”后可多选。应用会自动修正照片方向，并处理为本机屏幕 "
-                + managedWidth + "×" + managedHeight
-                + "；可选择铺满裁剪，或完整显示并用黑色/白色填充。", 17);
-        Button importButton = addButton(importing ? "正在导入…" : "导入图片");
-        importButton.setEnabled(!importing);
-        importButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                chooseImportMode();
-            }
-        });
-
-        File[] files = WallpaperConfig.listImages(this);
-        if (files.length == 0) {
-            addParagraph("尚未导入自定义图片。支持系统文件选择器能够打开的 PNG、JPG、WEBP、BMP 等图片。", 17);
-        } else {
-            for (File file : files) {
-                addCustomCard(file);
-            }
-        }
-
-        Button legacy = addButton("迁移旧版 /sdcard/Wallpaper 图片（可选）");
-        legacy.setEnabled(!importing);
-        legacy.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                if (checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE)
-                        == PackageManager.PERMISSION_GRANTED) {
-                    importLegacyDirectory();
-                } else {
-                    requestStoragePermissionIfNeeded();
-                }
-            }
-        });
-    }
-
-    private void addCategorySwitch(String label, final String category) {
-        Switch control = addSwitchRow(
-                label, WallpaperConfig.isCategoryEnabled(preferences, category));
-        control.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-            @Override
-            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
-                preferences.edit().putBoolean(
-                        "category_enabled:" + category, isChecked).commit();
-                SystemWallpaperStore.syncConfigurationAsync(MainActivity.this, preferences);
-            }
-        });
-    }
-
-    private void addSystemCard(final String category, final String resourceName,
-            String label, String previewResource, boolean supportsDate) {
-        LinearLayout card = newCard();
-        FrameLayout preview = createPreviewFrame();
-        ImageView image = (ImageView) preview.getChildAt(0);
-        setSystemPreview(image, previewResource);
-
-        LinearLayout controls = newControlsColumn();
-        controls.addView(text(label, 21, true));
-        controls.addView(text("系统资源 · " + categoryLabel(category), 15, false));
-
-        Switch enabled = new Switch(this);
-        enabled.setText("启用并加入轮换");
-        enabled.setTextSize(17);
-        enabled.setChecked(WallpaperConfig.isSystemItemEnabled(
-                preferences, category, resourceName));
-        enabled.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-            @Override
-            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
-                WallpaperConfig.setSystemItemEnabled(
-                        preferences, category, resourceName, isChecked);
-                SystemWallpaperStore.syncConfigurationAsync(MainActivity.this, preferences);
-            }
-        });
-        controls.addView(enabled, matchWrap());
-
-        if (supportsDate) {
-            final TextView dateOverlay = (TextView) preview.getChildAt(1);
-            final Button dateMode = new Button(this);
-            dateMode.setTextSize(16);
-            updateDateControl(dateMode, dateOverlay,
-                    WallpaperConfig.getSystemDateMode(preferences, resourceName));
-            dateMode.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View view) {
-                    showDateModeDialog(WallpaperConfig.getSystemDateMode(
-                                    preferences, resourceName),
-                            new DateModeConsumer() {
-                                @Override
-                                public void accept(String mode) {
-                                    WallpaperConfig.setSystemDateMode(
-                                            preferences, resourceName, mode);
-                                    SystemWallpaperStore.syncConfigurationAsync(
-                                            MainActivity.this, preferences);
-                                    updateDateControl(dateMode, dateOverlay, mode);
-                                }
-                            });
-                }
-            });
-            controls.addView(dateMode, wrapWrap());
-        }
-
-        TextView protectedLabel = text("系统图片不可删除", 15, false);
-        protectedLabel.setTextColor(Color.DKGRAY);
-        controls.addView(protectedLabel, matchWrap());
-        card.addView(preview);
-        card.addView(controls);
-        content.addView(card, cardMargins());
-    }
-
-    private void addCustomCard(final File file) {
-        LinearLayout card = newCard();
-        final FrameLayout preview = createPreviewFrame();
-        ImageView image = (ImageView) preview.getChildAt(0);
-        image.setImageBitmap(loadThumbnail(file, 500, 650));
-
-        LinearLayout controls = newControlsColumn();
-        controls.addView(text(file.getName(), 21, true));
-        TextView details = text(WallpaperConfig.getCustomInfo(preferences, file), 14, false);
-        details.setTextColor(Color.DKGRAY);
-        controls.addView(details);
-
-        Switch enabled = new Switch(this);
-        enabled.setText("启用这张图片");
-        enabled.setTextSize(17);
-        enabled.setChecked(WallpaperConfig.isCustomItemEnabled(preferences, file));
-        enabled.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-            @Override
-            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
-                WallpaperConfig.setCustomItemEnabled(preferences, file, isChecked);
-                SystemWallpaperStore.syncConfigurationAsync(MainActivity.this, preferences);
-            }
-        });
-        controls.addView(enabled, matchWrap());
-
-        LinearLayout roles = new LinearLayout(this);
-        roles.setOrientation(LinearLayout.HORIZONTAL);
-        roles.addView(roleCheckBox(file, WallpaperConfig.LOCK, "锁屏"));
-        roles.addView(roleCheckBox(file, WallpaperConfig.SHUTDOWN, "关机"));
-        roles.addView(roleCheckBox(file, WallpaperConfig.REBOOT, "重启"));
-        controls.addView(roles, matchWrap());
-
-        final TextView dateOverlay = (TextView) preview.getChildAt(1);
-        final Button dateMode = new Button(this);
-        dateMode.setTextSize(16);
-        updateDateControl(dateMode, dateOverlay,
-                WallpaperConfig.getCustomDateMode(preferences, file));
-        dateMode.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                showDateModeDialog(WallpaperConfig.getCustomDateMode(preferences, file),
-                        new DateModeConsumer() {
-                            @Override
-                            public void accept(String mode) {
-                                WallpaperConfig.setCustomDateMode(preferences, file, mode);
-                                SystemWallpaperStore.syncConfigurationAsync(
-                                        MainActivity.this, preferences);
-                                updateDateControl(dateMode, dateOverlay, mode);
-                            }
-                        });
-            }
-        });
-        controls.addView(dateMode, wrapWrap());
-
-        Button delete = new Button(this);
-        delete.setText("删除这张图片");
-        delete.setTextSize(16);
-        delete.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                confirmDelete(file);
-            }
-        });
-        controls.addView(delete, wrapWrap());
-
-        card.addView(preview);
-        card.addView(controls);
-        content.addView(card, cardMargins());
-    }
-
-    private CheckBox roleCheckBox(final File file, final String category, String label) {
-        CheckBox checkBox = new CheckBox(this);
-        checkBox.setText(label);
-        checkBox.setTextSize(16);
-        checkBox.setChecked(WallpaperConfig.isCustomRoleEnabled(
-                preferences, file, category));
-        checkBox.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-            @Override
-            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
-                WallpaperConfig.setCustomRoleEnabled(
-                        preferences, file, category, isChecked);
-                SystemWallpaperStore.syncConfigurationAsync(MainActivity.this, preferences);
-            }
-        });
-        return checkBox;
-    }
-
-    private void showDateModeDialog(String currentMode, final DateModeConsumer consumer) {
-        new AlertDialog.Builder(this)
-                .setTitle("锁屏日期（当前：" + dateModeLabel(currentMode) + "）")
-                .setItems(new String[] {"黑色", "白色", "关闭"},
-                        new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        if (which == 0) {
-                            consumer.accept(WallpaperConfig.DATE_BLACK);
-                        } else if (which == 1) {
-                            consumer.accept(WallpaperConfig.DATE_WHITE);
-                        } else {
-                            consumer.accept(WallpaperConfig.DATE_OFF);
-                        }
-                    }
-                })
-                .setNegativeButton("取消", null)
-                .show();
-    }
-
-    private void updateDateControl(Button button, TextView preview, String mode) {
-        mode = WallpaperConfig.normalizeDateMode(mode);
-        button.setText("锁屏日期：" + dateModeLabel(mode));
-        if (WallpaperConfig.DATE_OFF.equals(mode)) {
-            preview.setVisibility(View.GONE);
-            return;
-        }
-        preview.setVisibility(View.VISIBLE);
-        preview.setBackgroundColor(Color.TRANSPARENT);
-        if (WallpaperConfig.DATE_WHITE.equals(mode)) {
-            preview.setTextColor(Color.WHITE);
-            preview.setShadowLayer(dp(1), 0, 0, Color.BLACK);
-        } else {
-            preview.setTextColor(Color.BLACK);
-            preview.setShadowLayer(dp(1), 0, 0, Color.WHITE);
-        }
-    }
-
-    private String dateModeLabel(String mode) {
-        mode = WallpaperConfig.normalizeDateMode(mode);
-        if (WallpaperConfig.DATE_WHITE.equals(mode)) {
-            return "白色";
-        }
-        if (WallpaperConfig.DATE_OFF.equals(mode)) {
-            return "关闭";
-        }
-        return "黑色";
-    }
-
-    private interface DateModeConsumer {
-        void accept(String mode);
-    }
-
     private void confirmDelete(final File file) {
         new AlertDialog.Builder(this)
                 .setTitle("删除图片")
-                .setMessage("将从应用内图库永久删除：\n" + file.getName())
+                .setMessage("将从图库永久删除：\n" + file.getName())
                 .setNegativeButton("取消", null)
-                .setPositiveButton("删除", new DialogInterface.OnClickListener() {
+                .setPositiveButton("确认删除", new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface dialog, int which) {
                         deleteImage(file);
                     }
-                })
-                .show();
+                }).show();
     }
 
     private void deleteImage(File file) {
@@ -604,96 +699,51 @@ public final class MainActivity extends Activity {
             if (file.isFile() && file.delete()) {
                 WallpaperConfig.forgetCustomItem(preferences, file);
                 SystemWallpaperStore.removeImageAsync(this, file, preferences);
-                Toast.makeText(this, "已删除 " + file.getName(), Toast.LENGTH_SHORT).show();
                 rebuild();
             } else {
                 Toast.makeText(this, "删除失败", Toast.LENGTH_LONG).show();
             }
         } catch (IOException error) {
-            Toast.makeText(this, "拒绝删除目录外文件", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "拒绝删除图库外文件", Toast.LENGTH_LONG).show();
         }
     }
 
-    private FrameLayout createPreviewFrame() {
-        FrameLayout frame = new FrameLayout(this);
-        LinearLayout.LayoutParams frameParams = new LinearLayout.LayoutParams(dp(220), dp(294));
-        frameParams.setMargins(0, 0, dp(22), 0);
-        frame.setLayoutParams(frameParams);
-        frame.setBackgroundColor(Color.WHITE);
-
-        ImageView image = new ImageView(this);
-        image.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        frame.addView(image, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-
-        TextView date = text(new SimpleDateFormat(
-                "MM月dd日  E", Locale.CHINA).format(new Date()), 16, true);
-        date.setTextColor(Color.BLACK);
-        date.setBackgroundColor(Color.TRANSPARENT);
-        date.setShadowLayer(dp(1), 0, 0, Color.WHITE);
-        date.setGravity(Gravity.CENTER);
-        FrameLayout.LayoutParams dateParams = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(40), Gravity.BOTTOM);
-        frame.addView(date, dateParams);
-        return frame;
+    private String dateLabel(String mode) {
+        mode = WallpaperConfig.normalizeDateMode(mode);
+        if (WallpaperConfig.DATE_WHITE.equals(mode)) {
+            return "日期：白";
+        }
+        if (WallpaperConfig.DATE_OFF.equals(mode)) {
+            return "日期：关";
+        }
+        return "日期：黑";
     }
 
-    private LinearLayout newCard() {
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.HORIZONTAL);
-        card.setPadding(dp(18), dp(18), dp(18), dp(18));
-        card.setGravity(Gravity.TOP);
-        GradientDrawable background = new GradientDrawable();
-        background.setColor(0xFFF2F2F2);
-        background.setStroke(dp(1), 0xFF777777);
-        background.setCornerRadius(dp(4));
-        card.setBackground(background);
-        return card;
+    private LinearLayout horizontal() {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        return row;
     }
 
-    private LinearLayout newControlsColumn() {
-        LinearLayout controls = new LinearLayout(this);
-        controls.setOrientation(LinearLayout.VERTICAL);
-        controls.setPadding(dp(4), 0, 0, 0);
-        controls.setLayoutParams(new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        return controls;
-    }
-
-    private Switch addSwitchRow(String label, boolean checked) {
-        Switch control = new Switch(this);
-        control.setText(label);
-        control.setTextSize(20);
-        control.setChecked(checked);
-        control.setPadding(dp(8), dp(8), dp(8), dp(8));
-        content.addView(control, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        return control;
-    }
-
-    private Button addButton(String label) {
+    private Button compactButton(String label) {
         Button button = new Button(this);
         button.setText(label);
-        button.setTextSize(17);
-        LinearLayout.LayoutParams params = wrapWrap();
-        params.setMargins(0, dp(12), 0, dp(12));
-        content.addView(button, params);
+        button.setTextSize(13);
+        button.setMinHeight(0);
+        button.setMinimumHeight(0);
+        button.setPadding(dp(6), dp(3), dp(6), dp(3));
         return button;
     }
 
-    private void addTitle(String title, int size) {
-        TextView view = text(title, size, true);
-        LinearLayout.LayoutParams params = matchWrap();
-        params.setMargins(0, dp(16), 0, dp(10));
-        content.addView(view, params);
-    }
-
-    private void addParagraph(String value, int size) {
-        TextView view = text(value, size, false);
-        view.setLineSpacing(0, 1.15f);
-        LinearLayout.LayoutParams params = matchWrap();
-        params.setMargins(0, 0, 0, dp(14));
-        content.addView(view, params);
+    private Button mainButton(String label) {
+        Button button = new Button(this);
+        button.setText(label);
+        button.setTextSize(15);
+        button.setMinHeight(dp(44));
+        button.setMinimumHeight(dp(44));
+        button.setPadding(dp(10), dp(8), dp(10), dp(8));
+        return button;
     }
 
     private TextView text(String value, int size, boolean bold) {
@@ -702,62 +752,26 @@ public final class MainActivity extends Activity {
         view.setTextSize(size);
         view.setTextColor(Color.BLACK);
         if (bold) {
-            view.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            view.setTypeface(Typeface.DEFAULT_BOLD);
         }
         return view;
     }
 
-    private void setSystemPreview(ImageView image, String resourceName) {
-        Resources resources = Resources.getSystem();
-        int resourceId = resources.getIdentifier(resourceName, "drawable", "android");
-        if (resourceId == 0) {
-            image.setBackgroundColor(0xFFDDDDDD);
-            return;
-        }
-        BitmapFactory.Options options = new BitmapFactory.Options();
-        options.inSampleSize = 4;
-        options.inPreferredConfig = Bitmap.Config.RGB_565;
-        image.setImageBitmap(BitmapFactory.decodeResource(resources, resourceId, options));
-    }
-
-    private String systemPreviewResource(String category) {
-        boolean landscape = getResources().getConfiguration().orientation
-                == Configuration.ORIENTATION_LANDSCAPE;
-        if (WallpaperConfig.REBOOT.equals(category)) {
-            return landscape ? "reboot_window_img_land" : "reboot_window_img";
-        }
-        return landscape ? "shutdown_window_img_land" : "shutdown_window_img";
-    }
-
-    private Bitmap loadThumbnail(File file, int targetWidth, int targetHeight) {
-        BitmapFactory.Options bounds = new BitmapFactory.Options();
-        bounds.inJustDecodeBounds = true;
-        BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
-        int sample = 1;
-        while (bounds.outWidth / (sample * 2) >= targetWidth
-                && bounds.outHeight / (sample * 2) >= targetHeight) {
-            sample *= 2;
-        }
-        BitmapFactory.Options options = new BitmapFactory.Options();
-        options.inSampleSize = sample;
-        options.inPreferredConfig = Bitmap.Config.RGB_565;
-        return BitmapFactory.decodeFile(file.getAbsolutePath(), options);
-    }
-
-    private String categoryLabel(String category) {
-        if (WallpaperConfig.LOCK.equals(category)) {
-            return "锁屏";
-        }
-        if (WallpaperConfig.SHUTDOWN.equals(category)) {
-            return "关机";
-        }
-        return "重启";
-    }
-
-    private LinearLayout.LayoutParams cardMargins() {
+    private LinearLayout.LayoutParams cardWeight() {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        params.setMargins(0, dp(8), 0, dp(12));
+                0, ViewGroup.LayoutParams.MATCH_PARENT, 1f);
+        params.setMargins(dp(3), dp(3), dp(3), dp(3));
+        return params;
+    }
+
+    private LinearLayout.LayoutParams weighted() {
+        return weighted(1f);
+    }
+
+    private LinearLayout.LayoutParams weighted(float weight) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, weight);
+        params.setMargins(dp(2), dp(2), dp(2), dp(2));
         return params;
     }
 

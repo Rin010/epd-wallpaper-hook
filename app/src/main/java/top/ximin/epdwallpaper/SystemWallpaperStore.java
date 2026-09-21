@@ -8,6 +8,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.util.List;
 import java.util.Properties;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -56,7 +57,6 @@ final class SystemWallpaperStore {
                     ensureDirectories();
                     writeConfiguration(appContext, preferences);
                 } catch (Throwable ignored) {
-                    // The explicit sync button reports root/configuration problems to the user.
                 }
             }
         });
@@ -98,7 +98,7 @@ final class SystemWallpaperStore {
     private static void writeConfiguration(Context context, SharedPreferences preferences)
             throws IOException, InterruptedException {
         Properties properties = new Properties();
-        properties.setProperty("format", "1");
+        properties.setProperty("format", "2");
         properties.setProperty("global.enabled", Boolean.toString(
                 WallpaperConfig.isGlobalEnabled(preferences)));
         for (String category : new String[] {
@@ -106,43 +106,27 @@ final class SystemWallpaperStore {
             properties.setProperty("category." + category + ".enabled", Boolean.toString(
                     WallpaperConfig.isCategoryEnabled(preferences, category)));
         }
-        for (String resource : WallpaperConfig.LOCK_SYSTEM_IMAGES) {
-            properties.setProperty("system.lock." + resource + ".enabled", Boolean.toString(
-                    WallpaperConfig.isSystemItemEnabled(
-                            preferences, WallpaperConfig.LOCK, resource)));
-            String dateMode = WallpaperConfig.getSystemDateMode(preferences, resource);
-            properties.setProperty("system.lock." + resource + ".date.mode", dateMode);
-            properties.setProperty("system.lock." + resource + ".date", Boolean.toString(
-                    !WallpaperConfig.DATE_OFF.equals(dateMode)));
-        }
-        properties.setProperty("system.shutdown.default.enabled", Boolean.toString(
-                WallpaperConfig.isSystemItemEnabled(preferences,
-                        WallpaperConfig.SHUTDOWN, WallpaperConfig.SYSTEM_DEFAULT)));
-        properties.setProperty("system.reboot.default.enabled", Boolean.toString(
-                WallpaperConfig.isSystemItemEnabled(preferences,
-                        WallpaperConfig.REBOOT, WallpaperConfig.SYSTEM_DEFAULT)));
+        properties.setProperty("shutdown.selected",
+                WallpaperConfig.getSelectedItem(preferences, WallpaperConfig.SHUTDOWN));
+        properties.setProperty("reboot.selected",
+                WallpaperConfig.getSelectedItem(preferences, WallpaperConfig.REBOOT));
 
-        File[] images = WallpaperConfig.listImages(context);
-        properties.setProperty("custom.count", Integer.toString(images.length));
-        for (int index = 0; index < images.length; index++) {
-            File image = images[index];
-            String prefix = "custom." + index + '.';
-            properties.setProperty(prefix + "file", image.getName());
-            properties.setProperty(prefix + "enabled", Boolean.toString(
-                    WallpaperConfig.isCustomItemEnabled(preferences, image)));
-            String dateMode = WallpaperConfig.getCustomDateMode(preferences, image);
-            properties.setProperty(prefix + "date.mode", dateMode);
-            properties.setProperty(prefix + "date", Boolean.toString(
-                    !WallpaperConfig.DATE_OFF.equals(dateMode)));
+        List<WallpaperItem> items = WallpaperItem.all(context);
+        properties.setProperty("item.count", Integer.toString(items.size()));
+        for (int index = 0; index < items.size(); index++) {
+            WallpaperItem item = items.get(index);
+            String prefix = "item." + index + '.';
+            properties.setProperty(prefix + "id", item.id);
+            properties.setProperty(prefix + "type", item.system ? "system" : "custom");
+            if (item.system) {
+                properties.setProperty(prefix + "resource", item.resourceName);
+            } else {
+                properties.setProperty(prefix + "file", item.file.getName());
+            }
             properties.setProperty(prefix + "lock", Boolean.toString(
-                    WallpaperConfig.isCustomRoleEnabled(
-                            preferences, image, WallpaperConfig.LOCK)));
-            properties.setProperty(prefix + "shutdown", Boolean.toString(
-                    WallpaperConfig.isCustomRoleEnabled(
-                            preferences, image, WallpaperConfig.SHUTDOWN)));
-            properties.setProperty(prefix + "reboot", Boolean.toString(
-                    WallpaperConfig.isCustomRoleEnabled(
-                            preferences, image, WallpaperConfig.REBOOT)));
+                    WallpaperConfig.isLockSelected(preferences, item)));
+            properties.setProperty(prefix + "date.mode",
+                    WallpaperConfig.getDateMode(preferences, item));
         }
 
         File staging = new File(context.getCacheDir(), "wallpaper-config.properties");
@@ -164,8 +148,7 @@ final class SystemWallpaperStore {
 
     private static void runRoot(String command) throws IOException, InterruptedException {
         Process process = new ProcessBuilder("su", "-c", command)
-                .redirectErrorStream(true)
-                .start();
+                .redirectErrorStream(true).start();
         BufferedReader reader = new BufferedReader(
                 new InputStreamReader(process.getInputStream()));
         StringBuilder output = new StringBuilder();

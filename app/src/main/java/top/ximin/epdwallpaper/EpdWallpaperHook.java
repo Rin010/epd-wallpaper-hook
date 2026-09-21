@@ -48,10 +48,9 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
         try {
             installLockHook(lpparam.classLoader);
             installShutdownHook(lpparam.classLoader);
-            log("exact vendor hooks installed with system-owned image store in package="
-                    + lpparam.packageName + " process=" + lpparam.processName);
+            log("unified gallery hooks installed in " + lpparam.processName);
         } catch (Throwable error) {
-            log("unable to install exact vendor hooks", error);
+            log("unable to install vendor hooks", error);
         }
     }
 
@@ -66,9 +65,7 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
                         Context context = (Context) param.args[0];
                         Selection selection = select(WallpaperConfig.LOCK);
                         LOCK_SELECTION.set(selection);
-                        if (selection == null || !"system".equals(selection.mode)
-                                || selection.resourceName == null
-                                || WallpaperConfig.SYSTEM_DEFAULT.equals(selection.resourceName)) {
+                        if (selection == null || !selection.system) {
                             return;
                         }
                         int resourceId = context.getResources().getIdentifier(
@@ -76,7 +73,7 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
                         if (resourceId != 0) {
                             param.args[2] = resourceId;
                         } else {
-                            log("system lock resource not found: " + selection.resourceName);
+                            log("lock resource missing: " + selection.resourceName);
                         }
                     }
 
@@ -91,25 +88,22 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
                             View root = (View) param.thisObject;
                             ImageView background = findFirstImageView(root);
                             if (background == null) {
-                                log("LunarCalendarView contains no background ImageView");
+                                log("LunarCalendarView contains no ImageView");
                                 return;
                             }
-                            if ("custom".equals(selection.mode)
-                                    && !applyCustomImage(background, selection)) {
+                            if (!selection.system && !applyCustomImage(background, selection)) {
                                 return;
                             }
-                            int styledTextViews = 0;
+                            int textViews;
                             if (WallpaperConfig.DATE_OFF.equals(selection.dateMode)) {
-                                hideNonImageLeaves(root, background);
+                                textViews = setDateVisibility(root, background, View.GONE);
                             } else {
-                                styledTextViews = styleDateText(
-                                        root, background, selection.dateMode);
+                                textViews = styleDateText(root, background, selection.dateMode);
                             }
-                            log("lock selected " + selection.displayName
-                                    + ", dateMode=" + selection.dateMode
-                                    + ", styledTextViews=" + styledTextViews);
+                            log("lock selected " + selection.id + ", date="
+                                    + selection.dateMode + ", textViews=" + textViews);
                         } catch (Throwable error) {
-                            log("lock replacement failed; using stock image", error);
+                            log("lock replacement failed; using constructed image", error);
                         }
                     }
                 });
@@ -127,7 +121,6 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
                             imageField.setAccessible(true);
                             ImageView imageView = (ImageView) imageField.get(null);
                             if (imageView == null) {
-                                log("showShutDown completed without mShutdownBgImg");
                                 return;
                             }
                             Field rebootField = phoneWindowManager.getDeclaredField("mReboot");
@@ -135,15 +128,18 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
                             String category = rebootField.getBoolean(null)
                                     ? WallpaperConfig.REBOOT : WallpaperConfig.SHUTDOWN;
                             Selection selection = select(category);
-                            if (selection == null || !"custom".equals(selection.mode)) {
+                            if (selection == null) {
                                 return;
                             }
-                            if (applyCustomImage(imageView, selection)) {
+                            boolean applied = selection.system
+                                    ? applySystemImage(imageView, selection)
+                                    : applyCustomImage(imageView, selection);
+                            if (applied) {
                                 forceEinkRefresh(imageView);
-                                log(category + " selected " + selection.displayName);
+                                log(category + " selected " + selection.id);
                             }
                         } catch (Throwable error) {
-                            log("shutdown/reboot replacement failed; using stock image", error);
+                            log("shutdown/reboot replacement failed", error);
                         }
                     }
                 });
@@ -155,47 +151,69 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
                 || !readBoolean(config, "category." + category + ".enabled", false)) {
             return null;
         }
-        ArrayList<Selection> candidates = new ArrayList<>();
+        int count = Math.max(0, Math.min(readInt(config, "item.count", 0), 2000));
         if (WallpaperConfig.LOCK.equals(category)) {
-            for (String resource : WallpaperConfig.LOCK_SYSTEM_IMAGES) {
-                if (readBoolean(config, "system.lock." + resource + ".enabled", true)) {
-                    candidates.add(Selection.system(resource, readDateMode(config,
-                            "system.lock." + resource + ".date.mode",
-                            "system.lock." + resource + ".date")));
+            ArrayList<Selection> candidates = new ArrayList<>();
+            for (int index = 0; index < count; index++) {
+                String prefix = "item." + index + '.';
+                if (readBoolean(config, prefix + "lock", false)) {
+                    Selection selection = readSelection(config, prefix, true);
+                    if (selection != null) {
+                        candidates.add(selection);
+                    }
                 }
             }
-        } else if (readBoolean(config,
-                "system." + category + ".default.enabled", true)) {
-            candidates.add(Selection.system(
-                    WallpaperConfig.SYSTEM_DEFAULT, WallpaperConfig.DATE_OFF));
-        }
-        int count = Math.max(0, Math.min(readInt(config, "custom.count", 0), 1000));
-        for (int index = 0; index < count; index++) {
-            String prefix = "custom." + index + '.';
-            String fileName = config.getProperty(prefix + "file");
-            if (fileName == null || !fileName.equals(new File(fileName).getName())
-                    || !readBoolean(config, prefix + "enabled", false)
-                    || !readBoolean(config, prefix + category, false)) {
-                continue;
+            if (candidates.isEmpty()) {
+                return null;
             }
-            File image = new File(SystemWallpaperStore.IMAGE_ROOT, fileName);
-            if (isSafeSystemImage(image)) {
-                String dateMode = WallpaperConfig.LOCK.equals(category)
-                        ? readDateMode(config, prefix + "date.mode", prefix + "date")
-                        : WallpaperConfig.DATE_OFF;
-                candidates.add(Selection.custom(image, dateMode));
+            long next;
+            synchronized (NEXT_INDEX) {
+                Long previous = NEXT_INDEX.get(category);
+                next = previous == null ? System.nanoTime() : previous + 1L;
+                NEXT_INDEX.put(category, next);
             }
+            return candidates.get((int) Math.floorMod(next, (long) candidates.size()));
         }
-        if (candidates.isEmpty()) {
+
+        String selectedId = config.getProperty(category + ".selected");
+        if (selectedId == null) {
             return null;
         }
-        long next;
-        synchronized (NEXT_INDEX) {
-            Long previous = NEXT_INDEX.get(category);
-            next = previous == null ? System.nanoTime() : previous + 1L;
-            NEXT_INDEX.put(category, next);
+        for (int index = 0; index < count; index++) {
+            String prefix = "item." + index + '.';
+            if (selectedId.equals(config.getProperty(prefix + "id"))) {
+                return readSelection(config, prefix, false);
+            }
         }
-        return candidates.get((int) Math.floorMod(next, (long) candidates.size()));
+        return null;
+    }
+
+    private static Selection readSelection(
+            Properties config, String prefix, boolean withDate) {
+        String id = config.getProperty(prefix + "id");
+        String type = config.getProperty(prefix + "type");
+        String date = withDate
+                ? normalizeDateMode(config.getProperty(prefix + "date.mode"))
+                : WallpaperConfig.DATE_OFF;
+        if (id == null) {
+            return null;
+        }
+        if ("system".equals(type)) {
+            String resource = config.getProperty(prefix + "resource");
+            if (resource == null || resource.length() == 0) {
+                return null;
+            }
+            return Selection.system(id, resource, date);
+        }
+        if (!"custom".equals(type)) {
+            return null;
+        }
+        String fileName = config.getProperty(prefix + "file");
+        if (fileName == null || !fileName.equals(new File(fileName).getName())) {
+            return null;
+        }
+        File image = new File(SystemWallpaperStore.IMAGE_ROOT, fileName);
+        return isSafeSystemImage(image) ? Selection.custom(id, image, date) : null;
     }
 
     private static Properties loadConfiguration() {
@@ -211,9 +229,9 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
             } finally {
                 input.close();
             }
-            return "1".equals(properties.getProperty("format")) ? properties : null;
+            return "2".equals(properties.getProperty("format")) ? properties : null;
         } catch (IOException error) {
-            log("unable to read system-owned configuration", error);
+            log("unable to read system configuration", error);
             return null;
         }
     }
@@ -242,27 +260,33 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
         }
     }
 
-    private static String readDateMode(
-            Properties properties, String modeKey, String legacyBooleanKey) {
-        String mode = properties.getProperty(modeKey);
-        if (WallpaperConfig.DATE_BLACK.equals(mode)
-                || WallpaperConfig.DATE_WHITE.equals(mode)
-                || WallpaperConfig.DATE_OFF.equals(mode)) {
+    private static String normalizeDateMode(String mode) {
+        if (WallpaperConfig.DATE_WHITE.equals(mode) || WallpaperConfig.DATE_OFF.equals(mode)) {
             return mode;
         }
-        return readBoolean(properties, legacyBooleanKey, true)
-                ? WallpaperConfig.DATE_BLACK : WallpaperConfig.DATE_OFF;
+        return WallpaperConfig.DATE_BLACK;
     }
 
     private static boolean applyCustomImage(ImageView imageView, Selection selection) {
         Bitmap bitmap = decodeForDisplay(selection.image, imageView.getResources());
         if (bitmap == null) {
-            log("could not decode custom image " + selection.displayName
-                    + "; using stock image");
+            log("could not decode " + selection.id);
             return false;
         }
-        imageView.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        imageView.setScaleType(ImageView.ScaleType.FIT_XY);
         imageView.setImageBitmap(bitmap);
+        return true;
+    }
+
+    private static boolean applySystemImage(ImageView imageView, Selection selection) {
+        int id = imageView.getResources().getIdentifier(
+                selection.resourceName, "drawable", "android");
+        if (id == 0) {
+            log("system resource missing: " + selection.resourceName);
+            return false;
+        }
+        imageView.setScaleType(ImageView.ScaleType.FIT_XY);
+        imageView.setImageResource(id);
         return true;
     }
 
@@ -282,39 +306,44 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
         return null;
     }
 
-    private static void hideNonImageLeaves(View view, ImageView background) {
+    private static int setDateVisibility(View view, ImageView background, int visibility) {
         if (view == background) {
-            return;
+            return 0;
+        }
+        int count = 0;
+        if (view instanceof TextView) {
+            view.setVisibility(visibility);
+            count++;
         }
         if (view instanceof ViewGroup) {
             ViewGroup group = (ViewGroup) view;
             for (int index = 0; index < group.getChildCount(); index++) {
-                hideNonImageLeaves(group.getChildAt(index), background);
+                count += setDateVisibility(group.getChildAt(index), background, visibility);
             }
-        } else {
-            view.setVisibility(View.GONE);
         }
+        return count;
     }
 
     private static int styleDateText(View view, ImageView background, String mode) {
         if (view == background) {
             return 0;
         }
-        int styled = 0;
+        int count = 0;
         if (view instanceof TextView) {
             TextView text = (TextView) view;
             boolean white = WallpaperConfig.DATE_WHITE.equals(mode);
+            text.setVisibility(View.VISIBLE);
             text.setTextColor(white ? Color.WHITE : Color.BLACK);
             text.setShadowLayer(2f, 0f, 0f, white ? Color.BLACK : Color.WHITE);
-            styled++;
+            count++;
         }
         if (view instanceof ViewGroup) {
             ViewGroup group = (ViewGroup) view;
             for (int index = 0; index < group.getChildCount(); index++) {
-                styled += styleDateText(group.getChildAt(index), background, mode);
+                count += styleDateText(group.getChildAt(index), background, mode);
             }
         }
-        return styled;
+        return count;
     }
 
     private static Bitmap decodeForDisplay(File image, Resources resources) {
@@ -325,11 +354,9 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
             return null;
         }
         DisplayMetrics metrics = resources.getDisplayMetrics();
-        int targetWidth = Math.max(1, metrics.widthPixels);
-        int targetHeight = Math.max(1, metrics.heightPixels);
         int sample = 1;
-        while (bounds.outWidth / (sample * 2) >= targetWidth
-                && bounds.outHeight / (sample * 2) >= targetHeight) {
+        while (bounds.outWidth / (sample * 2) >= metrics.widthPixels
+                && bounds.outHeight / (sample * 2) >= metrics.heightPixels) {
             sample *= 2;
         }
         BitmapFactory.Options options = new BitmapFactory.Options();
@@ -346,7 +373,6 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
             forceRefresh.invoke(imageView);
         } catch (Throwable unavailable) {
             imageView.invalidate();
-            log("View.forceRefresh unavailable; invalidated shutdown view instead");
         }
     }
 
@@ -361,27 +387,27 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
     }
 
     private static final class Selection {
-        final String mode;
+        final String id;
+        final boolean system;
         final File image;
         final String resourceName;
-        final String displayName;
         final String dateMode;
 
-        private Selection(String mode, File image, String resourceName,
-                String displayName, String dateMode) {
-            this.mode = mode;
+        private Selection(String id, boolean system, File image,
+                String resourceName, String dateMode) {
+            this.id = id;
+            this.system = system;
             this.image = image;
             this.resourceName = resourceName;
-            this.displayName = displayName;
             this.dateMode = dateMode;
         }
 
-        static Selection system(String resourceName, String dateMode) {
-            return new Selection("system", null, resourceName, resourceName, dateMode);
+        static Selection system(String id, String resourceName, String dateMode) {
+            return new Selection(id, true, null, resourceName, dateMode);
         }
 
-        static Selection custom(File image, String dateMode) {
-            return new Selection("custom", image, null, image.getName(), dateMode);
+        static Selection custom(String id, File image, String dateMode) {
+            return new Selection(id, false, image, null, dateMode);
         }
     }
 }

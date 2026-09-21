@@ -8,6 +8,7 @@ import java.io.FileFilter;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.List;
 
 final class WallpaperConfig {
     static final String PREFS = "wallpaper_config";
@@ -17,7 +18,6 @@ final class WallpaperConfig {
     static final String LOCK = "lock";
     static final String SHUTDOWN = "shutdown";
     static final String REBOOT = "reboot";
-    static final String SYSTEM_DEFAULT = "default";
     static final String[] LOCK_SYSTEM_IMAGES = {"photo5", "photo6", "photo7", "photo8"};
     static final String DATE_BLACK = "black";
     static final String DATE_WHITE = "white";
@@ -30,6 +30,54 @@ final class WallpaperConfig {
         return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
+    static void migrateUnifiedModel(Context context, SharedPreferences preferences) {
+        if (preferences.getBoolean("unified_model_v2", false)) {
+            return;
+        }
+        SharedPreferences.Editor editor = preferences.edit();
+        List<WallpaperItem> items = WallpaperItem.all(context);
+        String shutdownSelection = null;
+        String rebootSelection = null;
+        for (WallpaperItem item : items) {
+            boolean selectedForLock;
+            String dateMode;
+            if (item.system) {
+                selectedForLock = WallpaperItem.isStockLockResource(item.resourceName)
+                        && preferences.getBoolean(
+                        "system_enabled:" + LOCK + ':' + item.resourceName, true);
+                dateMode = oldSystemDateMode(preferences, item.resourceName);
+            } else {
+                String oldId = legacyCustomId(item.file);
+                boolean enabled = preferences.getBoolean("custom_enabled:" + oldId, true);
+                selectedForLock = enabled && preferences.getBoolean(
+                        "custom_role:" + LOCK + ':' + oldId, true);
+                dateMode = oldCustomDateMode(preferences, item.file);
+                if (enabled && preferences.getBoolean(
+                        "custom_role:" + SHUTDOWN + ':' + oldId, false)
+                        && shutdownSelection == null) {
+                    shutdownSelection = item.id;
+                }
+                if (enabled && preferences.getBoolean(
+                        "custom_role:" + REBOOT + ':' + oldId, false)
+                        && rebootSelection == null) {
+                    rebootSelection = item.id;
+                }
+            }
+            editor.putBoolean(lockKey(item.id), selectedForLock);
+            editor.putString(dateKey(item.id), dateMode);
+        }
+        if (shutdownSelection == null) {
+            shutdownSelection = WallpaperItem.systemId("shutdown_window_img");
+        }
+        if (rebootSelection == null) {
+            rebootSelection = WallpaperItem.systemId("reboot_window_img");
+        }
+        editor.putString(selectionKey(SHUTDOWN), shutdownSelection);
+        editor.putString(selectionKey(REBOOT), rebootSelection);
+        editor.putBoolean("unified_model_v2", true);
+        editor.commit();
+    }
+
     static boolean isGlobalEnabled(SharedPreferences preferences) {
         return preferences.getBoolean("global_enabled", true);
     }
@@ -38,131 +86,87 @@ final class WallpaperConfig {
         return preferences.getBoolean("category_enabled:" + category, true);
     }
 
-    static boolean isSystemItemEnabled(
-            SharedPreferences preferences, String category, String resourceName) {
-        return preferences.getBoolean(
-                "system_enabled:" + category + ':' + resourceName, true);
+    static boolean isLockSelected(SharedPreferences preferences, WallpaperItem item) {
+        return preferences.getBoolean(lockKey(item.id),
+                item.system && WallpaperItem.isStockLockResource(item.resourceName));
     }
 
-    static void setSystemItemEnabled(SharedPreferences preferences, String category,
-            String resourceName, boolean enabled) {
-        preferences.edit().putBoolean(
-                "system_enabled:" + category + ':' + resourceName, enabled).apply();
+    static void setLockSelected(SharedPreferences preferences,
+            WallpaperItem item, boolean selected) {
+        preferences.edit().putBoolean(lockKey(item.id), selected).apply();
     }
 
-    static boolean isCustomItemEnabled(SharedPreferences preferences, File file) {
-        return preferences.getBoolean("custom_enabled:" + customId(file), false);
+    static String getDateMode(SharedPreferences preferences, WallpaperItem item) {
+        return normalizeDateMode(preferences.getString(dateKey(item.id), DATE_BLACK));
     }
 
-    static void setCustomItemEnabled(
-            SharedPreferences preferences, File file, boolean enabled) {
-        preferences.edit().putBoolean("custom_enabled:" + customId(file), enabled).apply();
+    static void setDateMode(SharedPreferences preferences,
+            WallpaperItem item, String mode) {
+        preferences.edit().putString(dateKey(item.id), normalizeDateMode(mode)).apply();
     }
 
-    static boolean isCustomRoleEnabled(
-            SharedPreferences preferences, File file, String category) {
-        return preferences.getBoolean(
-                "custom_role:" + category + ':' + customId(file), false);
-    }
-
-    static void setCustomRoleEnabled(SharedPreferences preferences, File file,
-            String category, boolean enabled) {
-        preferences.edit().putBoolean(
-                "custom_role:" + category + ':' + customId(file), enabled).apply();
-    }
-
-    static String getSystemDateMode(
-            SharedPreferences preferences, String resourceName) {
-        String modeKey = "system_date_mode:" + resourceName;
-        if (preferences.contains(modeKey)) {
-            return normalizeDateMode(preferences.getString(modeKey, DATE_BLACK));
-        }
-        return preferences.getBoolean("system_date:" + resourceName, true)
-                ? DATE_BLACK : DATE_OFF;
-    }
-
-    static void setSystemDateMode(
-            SharedPreferences preferences, String resourceName, String mode) {
+    static String nextDateMode(String mode) {
         mode = normalizeDateMode(mode);
-        preferences.edit()
-                .putString("system_date_mode:" + resourceName, mode)
-                .putBoolean("system_date:" + resourceName, !DATE_OFF.equals(mode))
-                .apply();
-    }
-
-    static String getCustomDateMode(SharedPreferences preferences, File file) {
-        String id = customId(file);
-        String modeKey = "custom_date_mode:" + id;
-        if (preferences.contains(modeKey)) {
-            return normalizeDateMode(preferences.getString(modeKey, DATE_BLACK));
+        if (DATE_BLACK.equals(mode)) {
+            return DATE_WHITE;
         }
-        return preferences.getBoolean("custom_date:" + id, true) ? DATE_BLACK : DATE_OFF;
+        if (DATE_WHITE.equals(mode)) {
+            return DATE_OFF;
+        }
+        return DATE_BLACK;
     }
 
-    static void setCustomDateMode(
-            SharedPreferences preferences, File file, String mode) {
-        String id = customId(file);
-        mode = normalizeDateMode(mode);
-        preferences.edit()
-                .putString("custom_date_mode:" + id, mode)
-                .putBoolean("custom_date:" + id, !DATE_OFF.equals(mode))
-                .apply();
+    static String getSelectedItem(SharedPreferences preferences, String category) {
+        String fallback = SHUTDOWN.equals(category)
+                ? WallpaperItem.systemId("shutdown_window_img")
+                : WallpaperItem.systemId("reboot_window_img");
+        return preferences.getString(selectionKey(category), fallback);
+    }
+
+    static void setSelectedItem(SharedPreferences preferences,
+            String category, WallpaperItem item) {
+        preferences.edit().putString(selectionKey(category), item.id).apply();
     }
 
     static void forgetCustomItem(SharedPreferences preferences, File file) {
-        String id = customId(file);
-        preferences.edit()
-                .remove("custom_enabled:" + id)
-                .remove("custom_date:" + id)
-                .remove("custom_date_mode:" + id)
-                .remove("custom_info:" + id)
-                .remove("custom_role:" + LOCK + ':' + id)
-                .remove("custom_role:" + SHUTDOWN + ':' + id)
-                .remove("custom_role:" + REBOOT + ':' + id)
-                .apply();
+        String id = WallpaperItem.customId(file);
+        SharedPreferences.Editor editor = preferences.edit()
+                .remove(lockKey(id)).remove(dateKey(id)).remove(infoKey(id));
+        if (id.equals(getSelectedItem(preferences, SHUTDOWN))) {
+            editor.putString(selectionKey(SHUTDOWN),
+                    WallpaperItem.systemId("shutdown_window_img"));
+        }
+        if (id.equals(getSelectedItem(preferences, REBOOT))) {
+            editor.putString(selectionKey(REBOOT),
+                    WallpaperItem.systemId("reboot_window_img"));
+        }
+        editor.apply();
     }
 
     static String getCustomInfo(SharedPreferences preferences, File file) {
-        return preferences.getString("custom_info:" + customId(file), "应用内图片");
+        return preferences.getString(infoKey(WallpaperItem.customId(file)), "应用内图片");
     }
 
     static void initializeImportedItem(
             SharedPreferences preferences, ImageImporter.Result result) {
-        String id = customId(result.file);
+        String id = WallpaperItem.customId(result.file);
         preferences.edit()
-                .putBoolean("custom_enabled:" + id, true)
-                .putBoolean("custom_date:" + id, true)
-                .putString("custom_date_mode:" + id, DATE_BLACK)
-                .putBoolean("custom_role:" + LOCK + ':' + id, true)
-                .putBoolean("custom_role:" + SHUTDOWN + ':' + id, false)
-                .putBoolean("custom_role:" + REBOOT + ':' + id, false)
-                .putString("custom_info:" + id, result.description())
+                .putBoolean(lockKey(id), true)
+                .putString(dateKey(id), DATE_BLACK)
+                .putString(infoKey(id), result.description())
                 .commit();
     }
 
     static void initializeMigratedItem(SharedPreferences preferences, File legacy,
             ImageImporter.Result result) {
-        String oldId = customId(legacy);
-        String newId = customId(result.file);
-        String oldModeKey = "custom_date_mode:" + oldId;
-        String dateMode = preferences.contains(oldModeKey)
-                ? normalizeDateMode(preferences.getString(oldModeKey, DATE_BLACK))
-                : (preferences.getBoolean("custom_date:" + oldId, true)
-                        ? DATE_BLACK : DATE_OFF);
-        SharedPreferences.Editor editor = preferences.edit()
-                .putBoolean("custom_enabled:" + newId,
-                        preferences.getBoolean("custom_enabled:" + oldId, true))
-                .putBoolean("custom_date:" + newId,
-                        !DATE_OFF.equals(dateMode))
-                .putString("custom_date_mode:" + newId, dateMode)
-                .putBoolean("custom_role:" + LOCK + ':' + newId,
-                        preferences.getBoolean("custom_role:" + LOCK + ':' + oldId, true))
-                .putBoolean("custom_role:" + SHUTDOWN + ':' + newId,
-                        preferences.getBoolean("custom_role:" + SHUTDOWN + ':' + oldId, false))
-                .putBoolean("custom_role:" + REBOOT + ':' + newId,
-                        preferences.getBoolean("custom_role:" + REBOOT + ':' + oldId, false))
-                .putString("custom_info:" + newId, result.description() + " · 已从旧目录迁移");
-        editor.commit();
+        String oldId = legacyCustomId(legacy);
+        String newId = WallpaperItem.customId(result.file);
+        preferences.edit()
+                .putBoolean(lockKey(newId), preferences.getBoolean(
+                        "custom_role:" + LOCK + ':' + oldId, true))
+                .putString(dateKey(newId), oldCustomDateMode(preferences, legacy))
+                .putString(infoKey(newId), result.description() + " · 已从旧目录迁移")
+                .commit();
     }
 
     static String normalizeDateMode(String mode) {
@@ -172,7 +176,43 @@ final class WallpaperConfig {
         return DATE_BLACK;
     }
 
-    static String customId(File file) {
+    private static String oldSystemDateMode(
+            SharedPreferences preferences, String resourceName) {
+        String modeKey = "system_date_mode:" + resourceName;
+        if (preferences.contains(modeKey)) {
+            return normalizeDateMode(preferences.getString(modeKey, DATE_BLACK));
+        }
+        return preferences.getBoolean("system_date:" + resourceName, true)
+                ? DATE_BLACK : DATE_OFF;
+    }
+
+    private static String oldCustomDateMode(SharedPreferences preferences, File file) {
+        String oldId = legacyCustomId(file);
+        String key = "custom_date_mode:" + oldId;
+        if (preferences.contains(key)) {
+            return normalizeDateMode(preferences.getString(key, DATE_BLACK));
+        }
+        return preferences.getBoolean("custom_date:" + oldId, true)
+                ? DATE_BLACK : DATE_OFF;
+    }
+
+    private static String lockKey(String id) {
+        return "item_lock:" + id;
+    }
+
+    private static String dateKey(String id) {
+        return "item_date:" + id;
+    }
+
+    private static String infoKey(String id) {
+        return "item_info:" + id;
+    }
+
+    private static String selectionKey(String category) {
+        return "item_selected:" + category;
+    }
+
+    private static String legacyCustomId(File file) {
         try {
             return file.getCanonicalPath();
         } catch (IOException ignored) {
@@ -202,17 +242,11 @@ final class WallpaperConfig {
             @Override
             public int compare(File left, File right) {
                 int byName = left.getName().compareToIgnoreCase(right.getName());
-                return byName != 0
-                        ? byName : left.getAbsolutePath().compareTo(right.getAbsolutePath());
+                return byName != 0 ? byName
+                        : left.getAbsolutePath().compareTo(right.getAbsolutePath());
             }
         });
         return files;
-    }
-
-    static File resolveImage(Context context, String name) throws IOException {
-        File file = new File(library(context), name);
-        assertUnderRoot(context, file);
-        return file;
     }
 
     static void assertUnderRoot(Context context, File file) throws IOException {
@@ -224,14 +258,8 @@ final class WallpaperConfig {
 
     static boolean isSupportedImage(File file) {
         String name = file.getName().toLowerCase(java.util.Locale.US);
-        return name.endsWith(".png")
-                || name.endsWith(".jpg")
-                || name.endsWith(".jpeg")
-                || name.endsWith(".webp")
+        return name.endsWith(".png") || name.endsWith(".jpg")
+                || name.endsWith(".jpeg") || name.endsWith(".webp")
                 || name.endsWith(".bmp");
-    }
-
-    static boolean isCategory(String category) {
-        return LOCK.equals(category) || SHUTDOWN.equals(category) || REBOOT.equals(category);
     }
 }
