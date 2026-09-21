@@ -26,6 +26,9 @@ jobs:
             exit 1
           fi
 
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
       - name: Install Android SDK components
         run: sdkmanager "platforms;android-27" "build-tools;30.0.2"
 
