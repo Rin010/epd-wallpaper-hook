@@ -17,6 +17,7 @@
 - 单击缩略图可全屏预览，预览中的日期位置、字号、粗细和描边与系统渲染逻辑一致。
 - 双列图库和分页设计适配低刷新率墨水屏，支持左右滑动翻页。
 - 提供总开关以及锁屏、关机、重启分类开关；关闭分类后隐藏对应控件。
+- 每天午夜附近自动重建一次已锁定画面，使日期和轮换图片更新；采用宽松时间窗口，每天最多唤醒一次 CPU，不点亮屏幕或背光。设备当时正在使用则跳过，下一次正常锁屏会自然更新。
 - 支持从旧版 `/sdcard/Wallpaper/` 图库迁移，迁移不会删除源文件。
 - 配置异常、图片缺失或解码失败时自动回退到系统原画面。
 
@@ -113,11 +114,11 @@ app/build/outputs/apk/release/app-release.apk
 - 推送到 `main`、提交 Pull Request 或手动运行时，[Build APK](https://github.com/Rin010/epd-wallpaper-hook/actions/workflows/build.yml) 会构建 Release APK，并保留构建产物 14 天。
 - 推送 `v*` 标签时，[Release APK](https://github.com/Rin010/epd-wallpaper-hook/actions/workflows/release.yml) 会校验标签与 `app/build.gradle` 中的 `versionName`、构建并验证签名，然后创建 GitHub Release。
 
-发布 `1.4.3` 的示例：
+发布 `1.5.0` 的示例：
 
 ```bash
-git tag -a v1.4.3 -m "EpdWallpaperManager v1.4.3"
-git push origin v1.4.3
+git tag -a v1.5.0 -m "EpdWallpaperManager v1.5.0"
+git push origin v1.5.0
 ```
 
 ## 项目结构
@@ -129,6 +130,7 @@ app/
     ├── assets/                   # Xposed 入口和默认作用域
     ├── java/top/ximin/epdwallpaper/
     │   ├── EpdWallpaperHook.java       # 系统框架 Hook
+    │   ├── DailyLockRefresh.java       # 低功耗午夜锁屏刷新
     │   ├── MainActivity.java           # 管理界面和导入流程
     │   ├── ImageImporter.java          # 分辨率与方向适配
     │   ├── IndexedPngEncoder.java      # 4-bit 灰度 PNG 编码

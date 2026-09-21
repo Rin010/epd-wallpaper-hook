@@ -8,8 +8,8 @@ android {
         applicationId 'top.ximin.epdwallpaper'
         minSdkVersion 27
         targetSdkVersion 27
-        versionCode 9
-        versionName '1.4.3'
+        versionCode 10
+        versionName '1.5.0'
     }
 
     buildTypes {

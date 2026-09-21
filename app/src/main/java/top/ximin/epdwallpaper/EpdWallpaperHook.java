@@ -52,6 +52,11 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
         } catch (Throwable error) {
             log("unable to install vendor hooks", error);
         }
+        try {
+            DailyLockRefresh.install(lpparam.classLoader);
+        } catch (Throwable error) {
+            log("daily lock refresh is unavailable on this firmware", error);
+        }
     }
 
     private static void installLockHook(ClassLoader classLoader) throws Throwable {
@@ -236,6 +241,13 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
         }
     }
 
+    static boolean isHookCategoryEnabled(String category) {
+        Properties config = loadConfiguration();
+        return config != null
+                && readBoolean(config, "global.enabled", false)
+                && readBoolean(config, "category." + category + ".enabled", false);
+    }
+
     private static boolean isSafeSystemImage(File image) {
         try {
             String root = new File(SystemWallpaperStore.IMAGE_ROOT).getCanonicalPath()
@@ -367,21 +379,21 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
         return BitmapFactory.decodeFile(image.getAbsolutePath(), options);
     }
 
-    private static void forceEinkRefresh(ImageView imageView) {
+    static void forceEinkRefresh(View view) {
         try {
             Method forceRefresh = View.class.getMethod("forceRefresh");
-            forceRefresh.invoke(imageView);
+            forceRefresh.invoke(view);
         } catch (Throwable unavailable) {
-            imageView.invalidate();
+            view.invalidate();
         }
     }
 
-    private static void log(String message) {
+    static void log(String message) {
         Log.i(TAG, message);
         XposedBridge.log(TAG + ": " + message);
     }
 
-    private static void log(String message, Throwable error) {
+    static void log(String message, Throwable error) {
         Log.e(TAG, message, error);
         XposedBridge.log(TAG + ": " + message + "\n" + Log.getStackTraceString(error));
     }
