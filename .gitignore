@@ -2,6 +2,12 @@
 **/build/
 local.properties
 *.iml
+.env
+.env.*
+*.jks
+*.keystore
+keystore.properties
+secrets.properties
 
 /xposed-stubs/classes/
 /work/
