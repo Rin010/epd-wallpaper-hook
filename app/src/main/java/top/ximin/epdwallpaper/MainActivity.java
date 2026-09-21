@@ -165,7 +165,8 @@ public final class MainActivity extends Activity {
         root.addView(actions, matchWrap());
 
         List<WallpaperItem> items = WallpaperItem.all(this);
-        int pageCount = Math.max(1, (items.size() + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE);
+        final int pageCount = Math.max(
+                1, (items.size() + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE);
         currentPage = Math.max(0, Math.min(currentPage, pageCount - 1));
         LinearLayout grid = new LinearLayout(this);
         grid.setOrientation(LinearLayout.VERTICAL);
@@ -184,6 +185,29 @@ public final class MainActivity extends Activity {
             }
         }
 
+        SwipePagingLayout gallery = new SwipePagingLayout(this);
+        gallery.addView(grid, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        gallery.setListener(new SwipePagingLayout.Listener() {
+            @Override
+            public void onSwipeLeft() {
+                if (currentPage + 1 < pageCount) {
+                    currentPage++;
+                    rebuild();
+                }
+            }
+
+            @Override
+            public void onSwipeRight() {
+                if (currentPage > 0) {
+                    currentPage--;
+                    rebuild();
+                }
+            }
+        });
+        root.addView(gallery, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
         LinearLayout pager = horizontal();
         pager.setGravity(Gravity.CENTER_VERTICAL);
         Button previous = mainButton("上一页");
@@ -196,7 +220,7 @@ public final class MainActivity extends Activity {
             }
         });
         pager.addView(previous, weighted());
-        TextView page = text(String.format(Locale.CHINA, "第 %d / %d 页 · 共 %d 张",
+        TextView page = text(String.format(Locale.CHINA, "第%d/%d页  共%d张",
                 currentPage + 1, pageCount, items.size()), 14, true);
         page.setGravity(Gravity.CENTER);
         pager.addView(page, weighted(2f));
@@ -212,8 +236,6 @@ public final class MainActivity extends Activity {
         pager.addView(next, weighted());
         root.addView(pager, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(50)));
-        root.addView(grid, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
     }
 
     private View createCard(final WallpaperItem item) {
@@ -231,8 +253,13 @@ public final class MainActivity extends Activity {
         LinearLayout visual = new LinearLayout(this);
         visual.setOrientation(LinearLayout.VERTICAL);
         visual.setGravity(Gravity.CENTER);
-        final WallpaperPreviewView preview = new WallpaperPreviewView(
-                this, item, WallpaperConfig.getDateMode(preferences, item), false);
+        final boolean lockSelected = WallpaperConfig.isLockSelected(preferences, item);
+        final String configuredDateMode = WallpaperConfig.getDateMode(preferences, item);
+        final boolean lockControlsVisible = WallpaperConfig.isCategoryEnabled(
+                preferences, WallpaperConfig.LOCK);
+        final WallpaperPreviewView preview = new WallpaperPreviewView(this, item,
+                lockControlsVisible && lockSelected
+                        ? configuredDateMode : WallpaperConfig.DATE_OFF, false);
         preview.setContentDescription(item.title + "，单击全屏预览");
         preview.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -242,37 +269,44 @@ public final class MainActivity extends Activity {
         });
         visual.addView(preview, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        TextView name = text(item.title, 13, true);
-        name.setGravity(Gravity.CENTER);
-        name.setSingleLine(true);
-        visual.addView(name, matchWrap());
         card.addView(visual, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.MATCH_PARENT, 1.45f));
+                ViewGroup.LayoutParams.MATCH_PARENT, 1.55f));
 
         LinearLayout controls = new LinearLayout(this);
         controls.setOrientation(LinearLayout.VERTICAL);
         controls.setGravity(Gravity.CENTER_VERTICAL);
         controls.setPadding(dp(6), 0, 0, 0);
         card.addView(controls, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.MATCH_PARENT, 0.55f));
+                ViewGroup.LayoutParams.MATCH_PARENT, 0.45f));
 
-        if (WallpaperConfig.isCategoryEnabled(preferences, WallpaperConfig.LOCK)) {
+        TextView name = text(displayName(item), 13, true);
+        name.setGravity(Gravity.START);
+        name.setSingleLine(false);
+        name.setHorizontallyScrolling(false);
+        name.setMaxLines(3);
+        controls.addView(name, matchWrap());
+
+        if (lockControlsVisible) {
             final CheckBox lock = new CheckBox(this);
             lock.setText("锁屏");
             lock.setTextSize(14);
-            lock.setChecked(WallpaperConfig.isLockSelected(preferences, item));
+            lock.setChecked(lockSelected);
             lock.setPadding(0, 0, 0, 0);
+            final Button date = compactButton(dateLabel(configuredDateMode));
+            date.setVisibility(lockSelected ? View.VISIBLE : View.GONE);
             lock.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
                 @Override
                 public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
                     WallpaperConfig.setLockSelected(preferences, item, isChecked);
+                    date.setVisibility(isChecked ? View.VISIBLE : View.GONE);
+                    preview.setDateMode(isChecked
+                            ? WallpaperConfig.getDateMode(preferences, item)
+                            : WallpaperConfig.DATE_OFF);
                     SystemWallpaperStore.syncConfigurationAsync(MainActivity.this, preferences);
                 }
             });
-            controls.addView(lock, matchWrap());
+            controls.addView(lock, controlRow());
 
-            final Button date = compactButton(dateLabel(
-                    WallpaperConfig.getDateMode(preferences, item)));
             date.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View view) {
@@ -284,18 +318,18 @@ public final class MainActivity extends Activity {
                     SystemWallpaperStore.syncConfigurationAsync(MainActivity.this, preferences);
                 }
             });
-            controls.addView(date, wrapWrap());
+            controls.addView(date, controlRow());
         }
 
         if (WallpaperConfig.isCategoryEnabled(preferences, WallpaperConfig.SHUTDOWN)) {
             RadioButton shutdown = roleRadio(item, WallpaperConfig.SHUTDOWN, "关机");
             shutdownRadios.add(shutdown);
-            controls.addView(shutdown, matchWrap());
+            controls.addView(shutdown, controlRow());
         }
         if (WallpaperConfig.isCategoryEnabled(preferences, WallpaperConfig.REBOOT)) {
             RadioButton reboot = roleRadio(item, WallpaperConfig.REBOOT, "重启");
             rebootRadios.add(reboot);
-            controls.addView(reboot, matchWrap());
+            controls.addView(reboot, controlRow());
         }
         if (!item.system) {
             Button delete = compactButton("删除");
@@ -305,7 +339,7 @@ public final class MainActivity extends Activity {
                     confirmDelete(item.file);
                 }
             });
-            controls.addView(delete, wrapWrap());
+            controls.addView(delete, controlRow());
         }
         return card;
     }
@@ -359,8 +393,13 @@ public final class MainActivity extends Activity {
     private void showFullscreenPreview(WallpaperItem item) {
         final Dialog dialog = new Dialog(this,
                 android.R.style.Theme_Material_Light_NoActionBar_Fullscreen);
+        boolean showDate = WallpaperConfig.isCategoryEnabled(
+                preferences, WallpaperConfig.LOCK)
+                && WallpaperConfig.isLockSelected(preferences, item);
         WallpaperPreviewView preview = new WallpaperPreviewView(
-                this, item, WallpaperConfig.getDateMode(preferences, item), true);
+                this, item, showDate
+                        ? WallpaperConfig.getDateMode(preferences, item)
+                        : WallpaperConfig.DATE_OFF, true);
         preview.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
@@ -719,6 +758,15 @@ public final class MainActivity extends Activity {
         return "日期：黑";
     }
 
+    private String displayName(WallpaperItem item) {
+        if (item.system || item.file == null) {
+            return item.title;
+        }
+        String name = item.file.getName();
+        int extension = name.lastIndexOf('.');
+        return extension > 0 ? name.substring(0, extension) : name;
+    }
+
     private LinearLayout horizontal() {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -778,6 +826,13 @@ public final class MainActivity extends Activity {
     private LinearLayout.LayoutParams matchWrap() {
         return new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+    }
+
+    private LinearLayout.LayoutParams controlRow() {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(38));
+        params.setMargins(0, dp(1), 0, dp(1));
+        return params;
     }
 
     private LinearLayout.LayoutParams wrapWrap() {
