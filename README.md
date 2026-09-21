@@ -30,3 +30,5 @@
 推送到 `main` 或提交 Pull Request 时，GitHub Actions 会使用 Java 8、Gradle 6.7.1、Android 27 SDK 构建 Release APK，并保留构建产物 14 天。
 
 发布前先让 `app/build.gradle` 中的 `versionName` 与标签一致，然后推送 `v*` 标签。例如版本为 `1.4.3` 时推送 `v1.4.3`，Actions 会自动构建 APK、生成发布说明并创建 GitHub Release。标签和应用版本不一致时发布会停止。
+
+正式构建使用仓库 Actions Secret 中保存的稳定签名文件；签名文件不会进入 Git 仓库。Pull Request 不读取该 Secret，只执行隔离的临时签名构建。
