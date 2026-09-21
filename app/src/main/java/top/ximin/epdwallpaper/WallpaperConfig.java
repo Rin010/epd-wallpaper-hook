@@ -152,7 +152,7 @@ final class WallpaperConfig {
         String id = WallpaperItem.customId(result.file);
         preferences.edit()
                 .putBoolean(lockKey(id), true)
-                .putString(dateKey(id), DATE_BLACK)
+                .putString(dateKey(id), DATE_OFF)
                 .putString(infoKey(id), result.description())
                 .commit();
     }
