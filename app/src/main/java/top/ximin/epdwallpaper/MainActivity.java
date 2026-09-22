@@ -135,6 +135,7 @@ public final class MainActivity extends Activity {
                 WallpaperConfig.isCategoryEnabled(preferences, WallpaperConfig.SHUTDOWN));
         addSwitch(switches, "重启", WallpaperConfig.REBOOT,
                 WallpaperConfig.isCategoryEnabled(preferences, WallpaperConfig.REBOOT));
+        addDailyRefreshSwitch(switches);
         root.addView(switches, matchWrap());
 
         LinearLayout actions = horizontal();
@@ -395,6 +396,24 @@ public final class MainActivity extends Activity {
                 if (category != null) {
                     rebuild();
                 }
+            }
+        });
+        row.addView(control, weighted());
+    }
+
+    private void addDailyRefreshSwitch(LinearLayout row) {
+        Switch control = new Switch(this);
+        control.setText("每日自动刷新");
+        control.setTextSize(14);
+        control.setChecked(WallpaperConfig.isDailyRefreshEnabled(preferences));
+        control.setGravity(Gravity.CENTER);
+        control.setContentDescription("每日零点自动刷新锁屏画面");
+        control.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                preferences.edit().putBoolean(
+                        WallpaperConfig.DAILY_REFRESH_ENABLED, isChecked).commit();
+                SystemWallpaperStore.syncConfigurationAsync(MainActivity.this, preferences);
             }
         });
         row.addView(control, weighted());

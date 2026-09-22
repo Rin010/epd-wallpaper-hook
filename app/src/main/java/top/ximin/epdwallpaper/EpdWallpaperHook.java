@@ -248,6 +248,15 @@ public final class EpdWallpaperHook implements IXposedHookLoadPackage {
                 && readBoolean(config, "category." + category + ".enabled", false);
     }
 
+    static boolean isDailyLockRefreshEnabled() {
+        Properties config = loadConfiguration();
+        return config != null
+                && readBoolean(config, "daily.refresh.enabled", true)
+                && readBoolean(config, "global.enabled", false)
+                && readBoolean(config, "category." + WallpaperConfig.LOCK
+                        + ".enabled", false);
+    }
+
     private static boolean isSafeSystemImage(File image) {
         try {
             String root = new File(SystemWallpaperStore.IMAGE_ROOT).getCanonicalPath()

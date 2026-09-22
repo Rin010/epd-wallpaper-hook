@@ -17,7 +17,7 @@
 - 单击缩略图可全屏预览，预览中的日期位置、字号、粗细和描边与系统渲染逻辑一致。
 - 双列图库和分页设计适配低刷新率墨水屏，支持左右滑动翻页。
 - 提供总开关以及锁屏、关机、重启分类开关；关闭分类后隐藏对应控件。
-- 每天午夜附近自动重建一次已锁定画面，使日期和轮换图片更新；采用宽松时间窗口，每天最多短时唤醒一次 CPU，不进入交互态且不点亮前光。设备当时正在使用则跳过，下一次正常锁屏会自然更新。
+- “每日自动刷新”开关可控制午夜附近自动重建锁屏画面，使日期和轮换图片更新。任务先临时保存并清零原厂冷暖前光档位，再执行一次正常唤醒和息屏，最后在息屏完成后恢复档位；设备当时正在使用则跳过。
 - 支持从旧版 `/sdcard/Wallpaper/` 图库迁移，迁移不会删除源文件。
 - 配置异常、图片缺失或解码失败时自动回退到系统原画面。
 
@@ -49,6 +49,16 @@ ROOT、刷写启动镜像和修改系统环境均有变砖风险。该教程发�
 6. 点击“同步到系统”可重新同步全部图片和配置。
 
 系统自带的锁屏、关机和重启图片都可以跨用途选择。例如，系统关机图也可以加入锁屏轮换。
+
+### 4. 测试每日刷新
+
+先让设备处于锁屏息屏状态，再从已获得 ROOT 权限的 ADB shell 发送测试广播：
+
+```bash
+adb shell su -c "am broadcast -a top.ximin.epdwallpaper.action.TEST_DAILY_LOCK_REFRESH -p android"
+```
+
+测试广播只触发一次与每日任务相同的正常唤醒、息屏流程，不会修改下一次午夜闹钟。它不受“每日自动刷新”开关限制，方便在关闭自动任务时单独验证；总开关和“锁屏”开关仍须开启。由于接收端要求系统 `DEVICE_POWER` 权限，不使用 `su` 的普通应用或 ADB shell 不能触发该流程。
 
 ## 图片处理
 
@@ -114,11 +124,11 @@ app/build/outputs/apk/release/app-release.apk
 - 推送到 `main`、提交 Pull Request 或手动运行时，[Build APK](https://github.com/Rin010/epd-wallpaper-hook/actions/workflows/build.yml) 会构建 Release APK，并保留构建产物 14 天。
 - 推送 `v*` 标签时，[Release APK](https://github.com/Rin010/epd-wallpaper-hook/actions/workflows/release.yml) 会校验标签与 `app/build.gradle` 中的 `versionName`、构建并验证签名，然后创建 GitHub Release。
 
-发布 `1.5.0` 的示例：
+发布 `1.7.0` 的示例：
 
 ```bash
-git tag -a v1.5.0 -m "EpdWallpaperManager v1.5.0"
-git push origin v1.5.0
+git tag -a v1.7.0 -m "EpdWallpaperManager v1.7.0"
+git push origin v1.7.0
 ```
 
 ## 项目结构
@@ -130,7 +140,9 @@ app/
     ├── assets/                   # Xposed 入口和默认作用域
     ├── java/top/ximin/epdwallpaper/
     │   ├── EpdWallpaperHook.java       # 系统框架 Hook
-    │   ├── DailyLockRefresh.java       # 低功耗午夜锁屏刷新
+    │   ├── DailyLockRefresh.java       # 每日刷新状态机与系统回调
+    │   ├── FrontLightSettings.java     # 冷暖前光设置保存与恢复
+    │   ├── SystemSleepCycle.java       # 正常系统唤醒与息屏调用
     │   ├── MainActivity.java           # 管理界面和导入流程
     │   ├── ImageImporter.java          # 分辨率与方向适配
     │   ├── IndexedPngEncoder.java      # 4-bit 灰度 PNG 编码

@@ -18,6 +18,7 @@ final class WallpaperConfig {
     static final String LOCK = "lock";
     static final String SHUTDOWN = "shutdown";
     static final String REBOOT = "reboot";
+    static final String DAILY_REFRESH_ENABLED = "daily_refresh_enabled";
     static final String[] LOCK_SYSTEM_IMAGES = {"photo5", "photo6", "photo7", "photo8"};
     static final String DATE_BLACK = "black";
     static final String DATE_WHITE = "white";
@@ -84,6 +85,10 @@ final class WallpaperConfig {
 
     static boolean isCategoryEnabled(SharedPreferences preferences, String category) {
         return preferences.getBoolean("category_enabled:" + category, true);
+    }
+
+    static boolean isDailyRefreshEnabled(SharedPreferences preferences) {
+        return preferences.getBoolean(DAILY_REFRESH_ENABLED, true);
     }
 
     static boolean isLockSelected(SharedPreferences preferences, WallpaperItem item) {

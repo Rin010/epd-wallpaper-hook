@@ -17,6 +17,8 @@ final class SystemWallpaperStore {
     static final String ROOT = "/data/system/epd-wallpaper";
     static final String IMAGE_ROOT = ROOT + "/images";
     static final String CONFIG = ROOT + "/config.properties";
+    static final String ACTION_CONFIGURATION_CHANGED =
+            "top.ximin.epdwallpaper.action.CONFIGURATION_CHANGED";
 
     private static final ExecutorService WRITER = Executors.newSingleThreadExecutor();
 
@@ -101,6 +103,8 @@ final class SystemWallpaperStore {
         properties.setProperty("format", "2");
         properties.setProperty("global.enabled", Boolean.toString(
                 WallpaperConfig.isGlobalEnabled(preferences)));
+        properties.setProperty("daily.refresh.enabled", Boolean.toString(
+                WallpaperConfig.isDailyRefreshEnabled(preferences)));
         for (String category : new String[] {
                 WallpaperConfig.LOCK, WallpaperConfig.SHUTDOWN, WallpaperConfig.REBOOT}) {
             properties.setProperty("category." + category + ".enabled", Boolean.toString(
@@ -144,6 +148,13 @@ final class SystemWallpaperStore {
                 + " && restorecon -F " + quote(temporary)
                 + " && mv -f " + quote(temporary) + ' ' + quote(CONFIG));
         staging.delete();
+        notifySystemConfigurationChanged();
+    }
+
+    private static void notifySystemConfigurationChanged()
+            throws IOException, InterruptedException {
+        runRoot("am broadcast -a " + quote(ACTION_CONFIGURATION_CHANGED)
+                + " -p android");
     }
 
     private static void runRoot(String command) throws IOException, InterruptedException {
